@@ -170,10 +170,17 @@ class CliBrain:
     # -- health ----------------------------------------------------------
 
     async def health(self) -> BrainStatus:
+        """Report what we actually know, which is less than you'd like.
+
+        Whether a subscription CLI is logged in can only be settled by running
+        it, and running it costs tokens -- so a health check that promised
+        "ready" would either be lying or quietly spending your quota. It says
+        "installed" instead, and the first real call reports the truth.
+        """
         exe = self.spec.command[0]
         if shutil.which(exe) is None:
             return BrainStatus(Health.MISSING, f"{exe} not installed")
-        return BrainStatus(Health.OK, f"{exe} found")
+        return BrainStatus(Health.UNVERIFIED, f"{exe} installed, login not checked")
 
 
 def _classify(message: str) -> Exception:

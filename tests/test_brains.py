@@ -202,3 +202,39 @@ class TestEchoBrain:
 
     async def test_is_always_healthy(self):
         assert (await EchoBrain().health()).usable
+
+
+class TestCliBrainHealth:
+    """`which` proves a binary exists. It proves nothing about being logged in.
+
+    `evie brains list` reported claude as "ready" on a machine where the next
+    call failed with "Not logged in". A health check must not claim more than
+    it checked.
+    """
+
+    def _brain(self, command):
+        from evie.brains import CliBrain, CliBrainSpec
+
+        return CliBrain(CliBrainSpec(name="x", command=command))
+
+    async def test_a_found_binary_is_installed_not_ready(self):
+        status = await self._brain(["sh", "-c", "{prompt}"]).health()
+        assert status.health is Health.UNVERIFIED
+        assert status.health is not Health.OK, "cannot promise a login it never checked"
+        assert status.usable, "still worth trying -- the real call reports the truth"
+
+    async def test_a_missing_binary_is_missing(self):
+        status = await self._brain(["definitely-not-real-xyz", "{prompt}"]).health()
+        assert status.health is Health.MISSING
+        assert not status.usable
+
+    async def test_an_http_brain_without_a_key_is_not_usable(self):
+        from evie.brains import HttpBrainSpec, OpenAICompatBrain
+
+        brain = OpenAICompatBrain(
+            HttpBrainSpec(name="g", base_url="http://x/v1", model="m",
+                          api_key_env="DEFINITELY_UNSET_KEY_XYZ")
+        )
+        status = await brain.health()
+        assert status.health is Health.UNAUTHENTICATED
+        assert not status.usable

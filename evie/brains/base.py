@@ -34,7 +34,8 @@ class BrainRefused(BrainError):
 
 
 class Health(Enum):
-    OK = "ok"
+    OK = "ok"                      # verified: we reached it
+    UNVERIFIED = "unverified"      # installed, but reachability costs a real call
     UNAUTHENTICATED = "unauthenticated"
     MISSING = "missing"
     EXHAUSTED = "exhausted"
@@ -48,7 +49,8 @@ class BrainStatus:
 
     @property
     def usable(self) -> bool:
-        return self.health is Health.OK
+        """Worth trying. Not a promise it will work."""
+        return self.health in (Health.OK, Health.UNVERIFIED)
 
 
 @dataclass

@@ -161,6 +161,7 @@ def brains_list() -> None:
 
     marks = {
         Health.OK: "[green]ready[/]",
+        Health.UNVERIFIED: "[green]installed[/]",
         Health.UNAUTHENTICATED: "[yellow]not authenticated[/]",
         Health.MISSING: "[red]missing[/]",
         Health.EXHAUSTED: "[yellow]rate limited[/]",
