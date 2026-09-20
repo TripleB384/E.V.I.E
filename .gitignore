@@ -1,0 +1,17 @@
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+dist/
+build/
+.pytest_cache/
+.ruff_cache/
+
+# Local config and memory never belong in the repo. brains.yaml can hold
+# machine-specific paths, and the vault is personal by definition.
+config.yaml
+.evie/
+vault/
+*.onnx
+voices-*.bin
