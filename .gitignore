@@ -8,10 +8,16 @@ build/
 .pytest_cache/
 .ruff_cache/
 
-# Local config and memory never belong in the repo. brains.yaml can hold
-# machine-specific paths, and the vault is personal by definition.
-config.yaml
+# Local overrides only. The shipped copies live in evie/defaults/ and are the
+# single source of truth -- anything at the repo root is your own working
+# version, with your machine's paths and your enabled brains in it.
+/brains.yaml
+/config.yaml
+
+# Personal by definition.
 .evie/
 vault/
+
+# Model weights, downloaded by `evie doctor --fix`.
 *.onnx
 voices-*.bin

@@ -101,6 +101,15 @@ class TestLoadRegistry:
 
 
 class TestShippedDefaults:
+    def test_defaults_ship_everything_init_copies(self):
+        """`evie init` copies these out of the package. A .gitignore pattern
+        once excluded config.yaml from the repo, which broke a fresh clone
+        without breaking anything locally."""
+        from evie.config import PACKAGE_DEFAULTS
+
+        for name in ("brains.yaml", "config.yaml", "EVIE.md"):
+            assert (PACKAGE_DEFAULTS / name).is_file(), f"missing default: {name}"
+
     def test_the_bundled_brains_yaml_actually_loads(self):
         """The file every new user starts from must not be broken."""
         from evie.config import PACKAGE_DEFAULTS
