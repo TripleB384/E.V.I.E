@@ -275,6 +275,16 @@ def doctor(fix: bool) -> None:
     check("at least one brain usable", bool(usable), f"{len(usable)} ready",
           "Install a CLI (claude/gemini/codex) or set an API key env var.")
 
+    console.print("\n[bold]python[/]")
+    version = ".".join(str(n) for n in sys.version_info[:3])
+    check(
+        f"python {version}",
+        sys.version_info >= (3, 11),
+        "",
+        "Kokoro needs onnxruntime, which only ships wheels for 3.11+. "
+        "macOS ships 3.9. Recreate the venv with: uv venv --python 3.12",
+    )
+
     console.print("\n[bold]python packages[/]")
     for mod, extra in (
         ("sounddevice", "audio in/out"),
