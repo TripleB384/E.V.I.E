@@ -204,8 +204,17 @@ class BrainRegistry:
 
 
 def _explain(name: str, exc: BrainError) -> str:
+    """Say why, not just that.
+
+    Spoken aloud a bare reason is right, but the same string ends up in the
+    CLI error when every brain fails -- and "claude is unavailable" gives
+    nobody anything to act on. Keep the detail the brain already produced.
+    """
+    reason = str(exc).strip()
     if isinstance(exc, BrainExhausted):
-        return f"{name} is rate limited."
-    if isinstance(exc, BrainUnavailable):
-        return f"{name} is unavailable."
-    return f"{name} failed."
+        headline = f"{name} is rate limited"
+    elif isinstance(exc, BrainUnavailable):
+        headline = f"{name} is unavailable"
+    else:
+        headline = f"{name} failed"
+    return f"{headline} ({reason})." if reason and reason not in headline else f"{headline}."

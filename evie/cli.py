@@ -142,7 +142,7 @@ def brains(ctx: click.Context) -> None:
 @brains.command("list")
 def brains_list() -> None:
     """Show every brain, whether it works, and today's usage."""
-    from .config import load_registry
+    from .config import find_config, load_registry
 
     try:
         registry = load_registry()
@@ -185,6 +185,7 @@ def brains_list() -> None:
         f"[dim]default {registry.active} · quick {registry.quick or '—'} · "
         f"fallback {' → '.join(registry.fallback) or '—'}[/]"
     )
+    console.print(f"[dim]config: {find_config('brains.yaml')}[/]")
 
 
 @brains.command("use")
@@ -254,11 +255,18 @@ def doctor(fix: bool) -> None:
 
     console.print("[bold]config[/]")
     try:
-        from .config import Settings, load_registry
+        from .config import Settings, find_config, load_registry
 
         settings = Settings.load()
         registry = load_registry()
+        source = find_config("brains.yaml")
         check("brains.yaml", True, f"{len(registry.names())} brains, default {registry.active}")
+        console.print(f"  [dim]loaded from {source}[/]")
+        if source.parent == Path.cwd():
+            console.print(
+                "  [yellow]This is a local override, not the shipped config. "
+                "Delete it to pick up updates from git.[/]"
+            )
     except Exception as exc:
         check("brains.yaml", False, "", str(exc))
         console.print("\n[red]Cannot continue without config.[/] Run `evie init`.")
