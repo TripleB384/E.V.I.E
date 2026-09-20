@@ -109,5 +109,7 @@ brains:
 
   echo:
     kind: echo
-    enabled: false               # turn on to test the voice loop with no model
+    # On by default, and never in `fallback` above: it needs no account, no
+    # key and no network, so `evie ask "hi" --brain echo` is the one command
+    # that proves your install works before any credential is involved.
     aliases: [echo, test, parrot]

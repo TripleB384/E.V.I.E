@@ -110,6 +110,34 @@ class TestShippedDefaults:
         for name in ("brains.yaml", "config.yaml", "EVIE.md"):
             assert (PACKAGE_DEFAULTS / name).is_file(), f"missing default: {name}"
 
+    def test_echo_works_out_of_the_box(self):
+        """The zero-credential smoke test has to work with zero setup.
+
+        It shipped disabled, so the first command in the setup instructions
+        -- the one that proves your install before any account is involved --
+        failed with "no brain called 'echo'".
+        """
+        from evie.config import PACKAGE_DEFAULTS
+
+        reg = load_registry(PACKAGE_DEFAULTS / "brains.yaml")
+        assert "echo" in reg.names()
+        assert reg.resolve("echo") == "echo"
+        # ...but it must never be a fallback: silently answering "You said: x"
+        # instead of a real reply would look like a working assistant.
+        assert "echo" not in reg.fallback
+        assert reg.active != "echo"
+
+    def test_an_unknown_brain_names_the_alternatives(self):
+        from evie.brains.registry import UnknownBrain
+        from evie.config import PACKAGE_DEFAULTS
+
+        reg = load_registry(PACKAGE_DEFAULTS / "brains.yaml")
+        with pytest.raises(UnknownBrain) as exc:
+            reg.resolve("clod")
+        message = str(exc.value)
+        assert "clod" in message and "claude" in message
+        assert not message.startswith("\'"), "KeyError repr quoting leaked through"
+
     def test_the_bundled_brains_yaml_actually_loads(self):
         """The file every new user starts from must not be broken."""
         from evie.config import PACKAGE_DEFAULTS

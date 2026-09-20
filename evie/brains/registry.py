@@ -29,7 +29,15 @@ from .base import (
 
 
 class UnknownBrain(KeyError):
-    pass
+    """No brain answers to that name.
+
+    KeyError renders its message with repr(), which turns a helpful sentence
+    into `'unknown brain ...'` -- quotes and all. Override it so the CLI can
+    print the message as written.
+    """
+
+    def __str__(self) -> str:
+        return str(self.args[0]) if self.args else "unknown brain"
 
 
 @dataclass
@@ -105,7 +113,9 @@ class BrainRegistry:
         for alias, target in self._aliases.items():
             if alias in key or key in alias:
                 return target
-        raise UnknownBrain(name)
+        raise UnknownBrain(
+            f"no brain called {name!r}. Available: {', '.join(self._brains)}"
+        )
 
     def get(self, name: str | None = None) -> Brain:
         return self._brains[self.resolve(name) if name else self._active]
