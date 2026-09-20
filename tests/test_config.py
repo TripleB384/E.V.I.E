@@ -181,3 +181,37 @@ class TestShippedDefaults:
         # Silently ignoring a path the user typed would hide their typo.
         with pytest.raises(ConfigError, match="not found"):
             Settings.load(tmp_path / "typo.yaml")
+
+
+class TestRepoHygiene:
+    """Checks on what the repository ships, not on what the code does.
+
+    A stale root brains.yaml shadowed the package defaults for every clone
+    while every other test passed -- because the defaults were correct the
+    whole time; they just were not what got loaded. Catching that means
+    looking at what git tracks.
+    """
+
+    def _tracked(self) -> set[str]:
+        import subprocess
+        from pathlib import Path
+
+        root = Path(__file__).resolve().parents[1]
+        out = subprocess.run(
+            ["git", "ls-files"], cwd=root, capture_output=True, text=True, check=True
+        )
+        return set(out.stdout.split())
+
+    @pytest.mark.parametrize("path", ["brains.yaml", "config.yaml"])
+    def test_root_config_is_not_shipped(self, path):
+        tracked = self._tracked()
+        assert path not in tracked, (
+            f"{path} is tracked at the repo root. Config resolves ./{path} before "
+            f"the package defaults, so shipping it freezes every clone's config at "
+            f"whatever this file said. Run: git rm --cached {path}"
+        )
+
+    def test_the_defaults_that_should_ship_do(self):
+        tracked = self._tracked()
+        for name in ("brains.yaml", "config.yaml", "EVIE.md"):
+            assert f"evie/defaults/{name}" in tracked
