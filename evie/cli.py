@@ -51,6 +51,18 @@ def run(debug: bool, brain: str | None) -> None:
     """Start the voice loop. Hold the hotkey to talk."""
     from .assistant import Assistant
 
+    # A global hotkey listener needs a real terminal session. Run from an
+    # agent's shell tool, a CI job or a pipe and the key press never arrives --
+    # the loop just sits there looking broken. Say so before spending thirty
+    # seconds loading Whisper and Kokoro to reach the same silence.
+    if not sys.stdin.isatty():
+        _fail(
+            "`evie run` needs an interactive terminal.",
+            "Open Terminal or iTerm directly, then: "
+            "cd ~/E.V.I.E && source .venv/bin/activate && evie run\n"
+            "  (`evie ask` and `evie say` work fine from a script or an agent's shell.)",
+        )
+
     try:
         assistant = Assistant.load()
         if brain:
@@ -340,6 +352,13 @@ def doctor(fix: bool) -> None:
         check("speakers", bool(outs), outs[0]["name"] if outs else "")
     except Exception as exc:
         check("audio devices", False, "", f"{exc}")
+
+    if not sys.stdin.isatty():
+        console.print(
+            "\n[yellow]Not a terminal session.[/] Checks below are unreliable here: this\n"
+            "  shell doesn't read your ~/.zshrc, so exported API keys look unset, and\n"
+            "  `evie run` can't receive hotkeys at all. Re-run in Terminal or iTerm."
+        )
 
     if sys.platform == "darwin":
         console.print("\n[bold]macOS permissions[/]")

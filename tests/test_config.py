@@ -273,3 +273,44 @@ class TestRepoHygiene:
         tracked = self._tracked()
         for name in ("brains.yaml", "config.yaml", "EVIE.md"):
             assert f"evie/defaults/{name}" in tracked
+
+
+class TestInteractiveGuard:
+    """`evie run` cannot work without a TTY, and should say so immediately.
+
+    Every command in this project's bring-up was driven through an agent's
+    shell tool. That is fine for `ask` and `say`; for `run` the hotkey press
+    never arrives, and without a guard the failure looks like broken audio
+    after a thirty-second model load.
+    """
+
+    def _invoke(self, args, stdin_isatty, tmp_path, monkeypatch):
+        """Run the CLI with config resolution pinned to the shipped defaults.
+
+        Without this the test picks up whatever brains.yaml happens to sit in
+        the working directory -- which is exactly how the stale-config bug hid
+        for five commits. A test that reads the developer's local config is
+        testing the developer's machine.
+        """
+        from unittest.mock import patch
+
+        from click.testing import CliRunner
+
+        from evie.cli import main
+
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setenv("EVIE_HOME", str(tmp_path / "home"))
+        with patch("sys.stdin.isatty", return_value=stdin_isatty):
+            return CliRunner().invoke(main, args)
+
+    def test_run_refuses_without_a_tty(self, tmp_path, monkeypatch):
+        result = self._invoke(["run"], False, tmp_path, monkeypatch)
+        assert result.exit_code != 0
+        assert "interactive terminal" in result.output
+        assert "Terminal or iTerm" in result.output
+
+    def test_ask_still_works_without_a_tty(self, tmp_path, monkeypatch):
+        # Scripts and agents must keep working -- only `run` needs the guard.
+        result = self._invoke(["ask", "hi", "--brain", "echo"], False, tmp_path, monkeypatch)
+        assert result.exit_code == 0, result.output
+        assert "You said: hi" in result.output
