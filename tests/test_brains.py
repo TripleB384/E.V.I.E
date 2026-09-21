@@ -316,3 +316,46 @@ class TestPinning:
         reg.use("b")
         reg.reset()
         assert reg.pinned is None and reg.active == "a"
+
+
+class TestErrorClassification:
+    """Which failures are worth trying another brain for.
+
+    Providers disagree on status codes: Google answers an invalid key with
+    400, most others with 401. Reading the status alone made a bad Google key
+    a fatal BrainRefused, so one wrong credential killed a request the
+    fallback chain could have answered.
+    """
+
+    def _classify(self, status, body):
+        from evie.brains.openai_compat import _from_status
+
+        return _from_status(status, body)
+
+    def test_googles_400_for_a_bad_key_is_recoverable(self):
+        body = '{"error": {"code": 400, "message": "Please pass a valid API key"}}'
+        exc = self._classify(400, body)
+        assert isinstance(exc, BrainUnavailable)
+        assert exc.retryable_elsewhere, "the chain must be able to move on"
+
+    def test_the_message_says_what_to_check(self):
+        exc = self._classify(400, '{"message": "Please pass a valid API key"}')
+        said = str(exc).lower()
+        assert "right provider" in said and "quotes" in said and "expired" in said
+
+    def test_a_401_is_still_recoverable(self):
+        assert isinstance(self._classify(401, "unauthorized"), BrainUnavailable)
+
+    def test_quota_language_reads_as_exhausted_at_any_status(self):
+        exc = self._classify(403, '{"message": "Quota exceeded for this project"}')
+        assert isinstance(exc, BrainExhausted)
+
+    def test_a_genuine_bad_request_stays_fatal(self):
+        """A bad model name fails identically everywhere, so trying three more
+        brains just wastes three more round trips."""
+        exc = self._classify(400, '{"error": {"message": "model not found: gpt-9"}}')
+        assert isinstance(exc, BrainRefused)
+        assert not exc.retryable_elsewhere
+
+    def test_429_is_exhausted(self):
+        assert isinstance(self._classify(429, "slow down"), BrainExhausted)
