@@ -87,6 +87,9 @@ class BrainRegistry:
         self.fallback = [n for n in fallback if n in brains]
         self.daily_limits = daily_limits or {}
         self._counts: dict[str, _Counter] = defaultdict(_Counter)
+        # Set by the loader. "Which file am I actually reading" has caused
+        # three separate debugging sessions on this project alone.
+        self.sources: list = []
 
         self._aliases: dict[str, str] = {n.lower(): n for n in brains}
         for alias, target in (aliases or {}).items():

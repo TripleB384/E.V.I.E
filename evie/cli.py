@@ -24,6 +24,45 @@ from .brains.base import Health
 console = Console()
 err = Console(stderr=True, style="bold red")
 
+OVERRIDE_STUB = """# Your overrides, layered on top of the shipped defaults.
+#
+# Anything you set here wins. Anything you leave out keeps following
+# evie/defaults/brains.yaml, so new providers and better defaults reach you
+# without you doing anything. That is why this file starts empty instead of
+# as a copy -- a copy freezes the day you ran `evie init`, and later
+# improvements become invisible.
+#
+# See every available brain and where each setting came from:
+#     evie brains list
+#
+# Examples, all commented out:
+#
+# default: claude              # who answers when nothing else applies
+# quick: groq                  # short questions go here
+#
+# brains:
+#   groq:
+#     model: llama-3.3-70b-versatile   # change one field, keep the rest
+#   ollama:
+#     enabled: false                   # turn one off for good
+#   my_server:                         # or add one of your own
+#     kind: openai
+#     base_url: http://192.168.1.50:8080/v1
+#     model: whatever-i-am-running
+#     aliases: [homelab]
+"""
+
+STUB_CONFIG = """# Your overrides, layered on top of evie/defaults/config.yaml.
+# Set only what you want to change; the rest keeps following the defaults.
+#
+# hotkey: f13                # if Right Option is awkward in your terminal
+# voice:
+#   kokoro_voice: af_bella   # `evie say --help` lists the engines
+#   speed: 1.15
+# ears:
+#   model: tiny.en           # faster, worse at names
+"""
+
 
 def _is_interactive() -> bool:
     """Whether this is a real terminal session.
@@ -232,7 +271,8 @@ def brains_list() -> None:
         f"[dim]default {registry.active} · quick {registry.quick or '—'} · "
         f"fallback {' → '.join(registry.fallback) or '—'}[/]"
     )
-    console.print(f"[dim]config: {find_config('brains.yaml')}[/]")
+    layers = getattr(registry, "sources", None) or [find_config("brains.yaml")]
+    console.print("[dim]config: " + " + ".join(str(p) for p in layers) + "[/]")
 
 
 @brains.command("use")
@@ -351,18 +391,20 @@ def memory_sync(message: str | None) -> None:
 @click.option("--owner", default=None, help="Your name, for EVIE.md.")
 def init(owner: str | None) -> None:
     """Create the vault and copy the starter config into ~/.evie."""
-    import shutil
-
-    from .config import PACKAGE_DEFAULTS, USER_DIR, Settings
+    from .config import Settings, user_dir
     from .memory import Vault
 
-    USER_DIR.mkdir(parents=True, exist_ok=True)
-    for name in ("brains.yaml", "config.yaml"):
-        src = PACKAGE_DEFAULTS / name
-        dst = USER_DIR / name
-        if src.is_file() and not dst.exists():
-            shutil.copy(src, dst)
-            console.print(f"[green]✓[/] wrote {dst}")
+    home = user_dir()
+    home.mkdir(parents=True, exist_ok=True)
+    # Deliberately a stub, not a copy of the defaults. A copy wins over the
+    # shipped config forever, so it silently freezes your setup on the day you
+    # ran this -- new brains never appear, and an API key you export has
+    # nothing to read it.
+    for name, stub in (("brains.yaml", OVERRIDE_STUB), ("config.yaml", STUB_CONFIG)):
+        dst = home / name
+        if not dst.exists():
+            dst.write_text(stub)
+            console.print(f"[green]✓[/] wrote {dst} [dim](empty — overrides only)[/]")
 
     settings = Settings.load()
     vault = Vault(settings.vault).ensure(owner or os.environ.get("USER", "you"))

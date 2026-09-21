@@ -360,3 +360,116 @@ class TestInteractiveGuard:
         result = self._invoke(["ask", "hi", "--brain", "echo"], False, tmp_path, monkeypatch)
         assert result.exit_code == 0, result.output
         assert "You said: hi" in result.output
+
+
+class TestConfigLayering:
+    """User config overlays the shipped defaults; it does not replace them.
+
+    Winner-takes-all resolution meant `evie init`'s copy froze a user's setup
+    on the day they ran it. New brains never appeared, and exporting
+    GEMINI_API_KEY did nothing because no brain existed to read it -- with no
+    error, since nothing was wrong from that config's point of view.
+    """
+
+    def _user_config(self, tmp_path, monkeypatch, data):
+        import yaml
+
+        home = tmp_path / ".evie"
+        home.mkdir(parents=True, exist_ok=True)
+        (home / "brains.yaml").write_text(yaml.safe_dump(data))
+        monkeypatch.setenv("EVIE_HOME", str(home))
+        monkeypatch.chdir(tmp_path)  # no ./brains.yaml to interfere
+        return home
+
+    def test_shipped_brains_survive_a_user_file(self, tmp_path, monkeypatch):
+        """The exact failure: a four-brain user file hiding the full roster."""
+        self._user_config(tmp_path, monkeypatch, {
+            "default": "claude",
+            "brains": {"claude": {"kind": "cli", "command": ["claude", "{prompt}"]}},
+        })
+        reg = load_registry()
+        for shipped in ("groq", "gemini_api", "openrouter", "github", "ollama"):
+            assert shipped in reg.names(), f"{shipped} vanished behind the user file"
+
+    def test_a_user_value_still_wins(self, tmp_path, monkeypatch):
+        self._user_config(tmp_path, monkeypatch, {"default": "echo"})
+        assert load_registry().active == "echo"
+
+    def test_one_field_can_be_overridden_without_losing_the_rest(
+        self, tmp_path, monkeypatch
+    ):
+        self._user_config(tmp_path, monkeypatch, {
+            "brains": {"groq": {"model": "llama-3.3-70b-versatile"}},
+        })
+        reg = load_registry()
+        assert reg.get("groq").spec.model == "llama-3.3-70b-versatile"
+        # aliases and base_url came from the defaults and must still be there
+        assert reg.resolve("fast") == "groq"
+        assert "groq.com" in reg.get("groq").spec.base_url
+
+    def test_turning_a_brain_off_sticks(self, tmp_path, monkeypatch):
+        self._user_config(tmp_path, monkeypatch, {
+            "brains": {"ollama": {"enabled": False}},
+        })
+        assert "ollama" not in load_registry().names()
+
+    def test_a_brain_of_your_own_is_added(self, tmp_path, monkeypatch):
+        self._user_config(tmp_path, monkeypatch, {
+            "brains": {"homelab": {
+                "kind": "openai", "base_url": "http://192.168.1.50:8080/v1",
+                "model": "mine", "aliases": ["homelab"],
+            }},
+        })
+        reg = load_registry()
+        assert reg.resolve("homelab") == "homelab"
+        assert "groq" in reg.names(), "adding one must not drop the others"
+
+    def test_a_user_fallback_order_replaces_rather_than_appends(
+        self, tmp_path, monkeypatch
+    ):
+        # A list is a stated preference, not a contribution to ours.
+        self._user_config(tmp_path, monkeypatch, {"fallback": ["echo"]})
+        assert load_registry().fallback == ["echo"]
+
+    def test_the_layers_are_reported(self, tmp_path, monkeypatch):
+        self._user_config(tmp_path, monkeypatch, {"default": "echo"})
+        sources = load_registry().sources
+        assert len(sources) == 2, "defaults plus the user file"
+        assert sources[0].parent.name == "defaults", "package layer goes first"
+
+
+class TestInitWritesStubs:
+    """`evie init` must not copy the defaults.
+
+    A copy wins over the shipped config permanently, which is the mechanism
+    behind the staleness above.
+    """
+
+    def test_the_written_config_overrides_nothing(self, tmp_path, monkeypatch):
+        import yaml
+        from click.testing import CliRunner
+
+        from evie.cli import main
+
+        monkeypatch.setenv("EVIE_HOME", str(tmp_path / ".evie"))
+        monkeypatch.setenv("HOME", str(tmp_path))
+        monkeypatch.chdir(tmp_path)
+        result = CliRunner().invoke(main, ["init"])
+        assert result.exit_code == 0, result.output
+
+        written = yaml.safe_load((tmp_path / ".evie" / "brains.yaml").read_text())
+        assert not written, "init must write an empty override file, not a copy"
+
+    def test_defaults_reach_a_freshly_initialised_user(self, tmp_path, monkeypatch):
+        from click.testing import CliRunner
+
+        from evie.cli import main
+
+        monkeypatch.setenv("EVIE_HOME", str(tmp_path / ".evie"))
+        monkeypatch.setenv("HOME", str(tmp_path))
+        monkeypatch.chdir(tmp_path)
+        CliRunner().invoke(main, ["init"])
+
+        reg = load_registry()
+        assert reg.active == "groq", "should track the shipped default"
+        assert "openrouter" in reg.names()
