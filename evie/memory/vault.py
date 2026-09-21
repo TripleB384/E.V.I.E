@@ -134,6 +134,47 @@ class GitError(Exception):
     pass
 
 
+def check_remote(url: str) -> str | None:
+    """Explain a malformed git remote, or return None if it looks fine.
+
+    Git's own error for a mangled URL is unhelpful, and the two accepted
+    shapes are easy to splice together -- pasting a browser URL after the
+    scp-style `git@host:` prefix produces something that looks plausible and
+    cannot work.
+    """
+    url = url.strip()
+    if not url:
+        return "empty remote"
+
+    # The common splice: git@github.com:https://github.com/you/repo
+    if url.startswith("git@") and "://" in url:
+        tail = url.split("://", 1)[1]
+        path = tail.split("/", 1)[1] if "/" in tail else "you/repo"
+        return (
+            "that is an SSH prefix with a web URL pasted after it. Use one form:\n"
+            f"    https://github.com/{path}.git      (asks for a token)\n"
+            f"    git@github.com:{path}.git          (needs an SSH key)"
+        )
+
+    if url.startswith(("https://", "http://", "ssh://", "git@")):
+        # A browser URL for the repo page works; the page for a file does not.
+        if "/tree/" in url or "/blob/" in url:
+            return "that is a link to a page inside the repo, not the repo itself"
+        return None
+
+    # A local path is a valid remote and useful for testing -- but only accept
+    # one that is written like a path. Path("my github repo").parent is ".",
+    # which always exists, so a bare existence check waves through anything.
+    if url.startswith(("/", "./", "../", "~")) or Path(url).exists():
+        return None
+
+    return (
+        "that does not look like a git remote. Expected something like:\n"
+        "    https://github.com/you/evie-vault.git\n"
+        "    git@github.com:you/evie-vault.git"
+    )
+
+
 class VaultGit:
     """Version control for the vault, using whatever git is already installed."""
 
@@ -160,6 +201,8 @@ class VaultGit:
 
     def setup(self, remote: str) -> None:
         """Turn the vault into a repo pointed at your own private remote."""
+        if problem := check_remote(remote):
+            raise GitError(problem)
         if not self.initialized:
             self._run("init")
             self._run("checkout", "-B", "main")

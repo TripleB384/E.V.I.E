@@ -138,3 +138,45 @@ class TestStats:
 
         info = stats(Vault(tmp_path / "v").ensure())
         assert info["days"] == 0 and info["first"] is None
+
+
+class TestRemoteValidation:
+    """Git's error for a malformed remote explains nothing, and the two valid
+    shapes splice together into something that looks plausible."""
+
+    def test_the_spliced_url_is_caught_and_explained(self):
+        from evie.memory import check_remote
+
+        problem = check_remote("git@github.com:https://github.com/TripleB384/evie-vault")
+        assert problem is not None
+        # Must show both correct forms with the user's own path filled in.
+        assert "https://github.com/TripleB384/evie-vault.git" in problem
+        assert "git@github.com:TripleB384/evie-vault.git" in problem
+
+    def test_both_real_forms_pass(self):
+        from evie.memory import check_remote
+
+        assert check_remote("https://github.com/you/evie-vault.git") is None
+        assert check_remote("git@github.com:you/evie-vault.git") is None
+        assert check_remote("ssh://git@github.com/you/evie-vault.git") is None
+
+    def test_a_link_to_a_page_inside_the_repo_is_rejected(self):
+        from evie.memory import check_remote
+
+        assert check_remote("https://github.com/you/repo/tree/main/notes") is not None
+
+    def test_nonsense_is_rejected_with_examples(self):
+        from evie.memory import check_remote
+
+        problem = check_remote("my github repo")
+        assert problem and "evie-vault.git" in problem
+
+    def test_setup_refuses_a_bad_remote(self, tmp_path):
+        from evie.memory import GitError, Vault, VaultGit
+
+        git = VaultGit(Vault(tmp_path / "v").ensure())
+        try:
+            git.setup("git@github.com:https://github.com/you/repo")
+            raise AssertionError("should have refused")
+        except GitError as exc:
+            assert "SSH prefix" in str(exc)
