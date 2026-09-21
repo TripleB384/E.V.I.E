@@ -103,6 +103,11 @@ class OpenAICompatBrain:
         except httpx.TimeoutException as exc:
             raise BrainUnavailable(f"{self.name} timed out") from exc
 
+    def missing(self) -> str | None:
+        if self.spec.api_key_env and not self._key:
+            return f"${self.spec.api_key_env} is not set"
+        return None
+
     async def health(self) -> BrainStatus:
         if self.spec.api_key_env and not self._key:
             return BrainStatus(Health.UNAUTHENTICATED, f"${self.spec.api_key_env} not set")

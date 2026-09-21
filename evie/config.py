@@ -248,6 +248,7 @@ def load_registry(path: Path | None = None) -> BrainRegistry:
         brains,
         default=default,
         quick=raw.get("quick"),
+        tiers=raw.get("tiers") or {},
         fallback=raw.get("fallback") or [],
         aliases=aliases,
         daily_limits=limits,

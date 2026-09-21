@@ -8,7 +8,14 @@ tokens and waits a second to do something local.
 import pytest
 
 from evie.brains import BrainRegistry, EchoBrain
-from evie.router import Action, is_quick, route, strip_address, wants_agentic
+from evie.router import (
+    Action,
+    complexity,
+    is_quick,
+    route,
+    strip_address,
+    wants_agentic,
+)
 
 
 class Agentic(EchoBrain):
@@ -102,8 +109,8 @@ class TestIntentRouting:
     @pytest.mark.parametrize(
         "said",
         ["organize my CS notes", "check my deadlines for this week",
-         "write a draft of the investor email", "fix the bug in parser.py",
-         "summarize my lecture notes"],
+         "fix the bug in parser.py", "summarize my lecture notes",
+         "save that to a file"],
     )
     def test_real_work_needs_a_brain_with_hands(self, reg, said):
         assert wants_agentic(said)
@@ -120,7 +127,95 @@ class TestIntentRouting:
         reg.use("groq")
         decision = route("read my syllabus", reg)
         assert decision.brain == "claude"
+        assert decision.tier == "agentic"
 
-    def test_long_questions_stay_on_the_main_brain(self, reg):
-        long_q = "what " + "really " * 25 + "happened"
-        assert route(long_q, reg).brain is None
+    def test_a_pinned_brain_survives_a_short_question(self, reg):
+        """Picking a brain by hand must stick. Otherwise the very next
+        one-liner routes back to the simple tier and undoes the choice."""
+        reg.use("claude")
+        assert reg.pinned == "claude"
+        assert route("what's the capital of Peru", reg).brain == "claude"
+
+    def test_a_pin_yields_only_to_work_it_cannot_do(self, reg):
+        """Honouring a toolless pin on a file task would not respect the
+        choice, it would fail at the file access instead."""
+        reg.use("groq")
+        assert route("summarize my lecture notes", reg).brain == "claude"
+        assert route("tell me about Rome", reg).brain == "groq", "still pinned"
+
+    def test_auto_releases_the_pin(self, reg):
+        reg.use("claude")
+        assert "Choosing" in route("auto", reg).text
+        assert reg.pinned is None
+        assert route("what's the capital of Peru", reg).brain == "groq"
+
+    def test_a_rambling_question_is_not_the_simple_tier(self, reg):
+        assert route("what " + "really " * 25 + "happened", reg).tier != "simple"
+
+
+class TestComplexity:
+    """Classifying difficulty before calling a model, because asking a model
+    how hard something is costs as much as answering it."""
+
+    import pytest as _pytest
+
+    @_pytest.mark.parametrize(
+        "said",
+        ["hey", "what time is it", "who wrote Dune", "how far is the moon",
+         "what's 12 times 12"],
+    )
+    def test_lookups_are_simple(self, said):
+        assert complexity(said) == "simple"
+
+    @_pytest.mark.parametrize(
+        "said",
+        ["compare Rust and Go for a web backend",
+         "analyze why our churn went up last quarter",
+         "help me decide between two pricing models",
+         "walk me through how a compiler does register allocation",
+         "what's the best way to structure a seed round",
+         "why does the parser fail on nested blocks",
+         "write me an essay on the Treaty of Versailles",
+         "write a draft of the investor email",
+         "draft a cold email to the accelerator",
+         "debug this recursion, it overflows on deep input"],
+    )
+    def test_real_thinking_is_hard(self, said):
+        assert complexity(said) == "hard"
+
+    @_pytest.mark.parametrize(
+        "said",
+        ["organize my CS notes", "check my deadlines", "read my syllabus",
+         "summarize my lecture notes", "fix the bug in parser.py"],
+    )
+    def test_touching_things_is_agentic(self, said):
+        # Checked before "hard": "summarize my lecture notes" reads like
+        # thinking work but is really a file task.
+        assert complexity(said) == "agentic"
+
+    def test_length_alone_lifts_a_request(self):
+        rambling = " ".join(["so I was thinking about the thing we discussed"] * 4)
+        assert complexity(rambling) == "hard"
+
+    def test_everything_else_is_normal(self):
+        # A statement, not a lookup and not a request for analysis.
+        assert complexity("I'm thinking about switching my major") == "normal"
+
+
+class TestTierRouting:
+    def test_each_tier_reaches_its_brain(self, reg):
+        reg.tiers = {"simple": "groq", "normal": "gemini_cli",
+                     "hard": "claude", "agentic": "claude"}
+        assert reg.for_tier("simple") == "groq"
+        assert reg.for_tier("hard") == "claude"
+
+    def test_a_parked_tier_degrades_instead_of_failing(self, reg):
+        """An unconfigured tier must not break routing -- you should not have
+        to edit the tier table every time an API key appears or expires."""
+        reg.tiers = {"simple": "groq", "hard": "claude"}
+        reg.parked["claude"] = "$ANTHROPIC not set"
+        assert reg.for_tier("hard") in reg.usable()
+
+    def test_agentic_never_lands_on_a_brain_without_hands(self, reg):
+        reg.tiers = {"agentic": "groq"}  # misconfigured: groq has no tools
+        assert reg.get(reg.for_tier("agentic")).agentic

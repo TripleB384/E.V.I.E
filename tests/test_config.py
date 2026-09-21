@@ -169,12 +169,15 @@ class TestShippedDefaults:
         reg = load_registry(PACKAGE_DEFAULTS / "brains.yaml")
         assert any(reg.get(n).agentic for n in reg.names())
 
-    def test_the_fallback_chain_ends_somewhere_offline(self):
+    def test_the_chain_ends_on_an_ollama_option(self):
+        """Local Ollama ships off, because nothing can cheaply detect that it
+        is not running -- unlike a missing API key. Ollama Cloud needs only a
+        key, so that is the one enabled by default, and it sits last."""
         from evie.config import PACKAGE_DEFAULTS
 
         reg = load_registry(PACKAGE_DEFAULTS / "brains.yaml")
-        assert "ollama" in reg.fallback, "last resort should work with no internet"
-        assert reg.fallback.index("ollama") == len(reg.fallback) - 1
+        assert reg.fallback[-1] == "ollama_cloud"
+        assert "ollama" not in reg.names(), "local Ollama is opt-in"
 
     def test_disabled_brains_contribute_no_aliases(self):
         """Otherwise "switch to local" resolves to a brain that isn't there."""
@@ -388,7 +391,7 @@ class TestConfigLayering:
             "brains": {"claude": {"kind": "cli", "command": ["claude", "{prompt}"]}},
         })
         reg = load_registry()
-        for shipped in ("groq", "gemini_api", "openrouter", "github", "ollama"):
+        for shipped in ("groq", "gemini_api", "openrouter", "github", "ollama_cloud"):
             assert shipped in reg.names(), f"{shipped} vanished behind the user file"
 
     def test_a_user_value_still_wins(self, tmp_path, monkeypatch):
@@ -409,9 +412,9 @@ class TestConfigLayering:
 
     def test_turning_a_brain_off_sticks(self, tmp_path, monkeypatch):
         self._user_config(tmp_path, monkeypatch, {
-            "brains": {"ollama": {"enabled": False}},
+            "brains": {"gemini_cli": {"enabled": False}},
         })
-        assert "ollama" not in load_registry().names()
+        assert "gemini_cli" not in load_registry().names()
 
     def test_a_brain_of_your_own_is_added(self, tmp_path, monkeypatch):
         self._user_config(tmp_path, monkeypatch, {
@@ -531,8 +534,8 @@ class TestOverrideWrites:
     ):
         """A disabled brain is absent from the merged registry, so resolving
         against the live one would make the disable irreversible."""
-        self._run(["brains", "disable", "ollama"], tmp_path, monkeypatch)
-        result = self._run(["brains", "enable", "ollama"], tmp_path, monkeypatch)
+        self._run(["brains", "disable", "groq"], tmp_path, monkeypatch)
+        result = self._run(["brains", "enable", "groq"], tmp_path, monkeypatch)
         assert result.exit_code == 0, result.output
 
     def test_enable_rejects_an_unknown_name_with_the_list(self, tmp_path, monkeypatch):

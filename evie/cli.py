@@ -236,41 +236,70 @@ def brains_list() -> None:
 
     statuses = asyncio.run(registry.health())
 
-    table = Table(title="brains", header_style="bold")
-    table.add_column("name")
-    table.add_column("kind")
-    table.add_column("tools")
-    table.add_column("status")
-    table.add_column("today", justify="right")
-    table.add_column("also called", style="dim")
-
+    kinds = {"CliBrain": "cli", "OpenAICompatBrain": "http", "EchoBrain": "echo"}
     marks = {
         Health.OK: "[green]ready[/]",
         Health.UNVERIFIED: "[green]installed[/]",
-        Health.UNAUTHENTICATED: "[yellow]not authenticated[/]",
-        Health.MISSING: "[red]missing[/]",
+        Health.UNAUTHENTICATED: "[yellow]no key[/]",
+        Health.MISSING: "[red]unreachable[/]",
         Health.EXHAUSTED: "[yellow]rate limited[/]",
         Health.UNKNOWN: "[dim]unknown[/]",
     }
-    kinds = {"CliBrain": "cli", "OpenAICompatBrain": "http", "EchoBrain": "echo"}
-    for name in registry.names():
+
+    # Which tier sends work here, so the table answers "when does this get
+    # used" rather than only "does it exist".
+    serves: dict[str, list[str]] = {}
+    for tier, brain in registry.tiers.items():
+        serves.setdefault(brain, []).append(tier)
+
+    active = [n for n in registry.names() if not registry.is_parked(n)]
+    table = Table(title="in the rotation", header_style="bold")
+    table.add_column("name")
+    table.add_column("kind")
+    table.add_column("tools")
+    table.add_column("handles")
+    table.add_column("status")
+    table.add_column("today", justify="right")
+
+    for name in active:
         impl = registry.get(name)
         status = statuses[name]
-        active = " [bold green]←[/]" if name == registry.active else ""
+        flags = ""
+        if name == registry.pinned:
+            flags = " [bold yellow]📌[/]"
+        elif name == registry.active:
+            flags = " [bold green]←[/]"
         table.add_row(
-            f"{name}{active}",
+            f"{name}{flags}",
             kinds.get(type(impl).__name__, "?"),
-            "yes" if impl.agentic else "no",
+            "yes" if impl.agentic else "—",
+            ", ".join(serves.get(name, [])) or "[dim]fallback only[/]",
             f"{marks[status.health]} [dim]{escape(status.detail)}[/]",
             registry.headroom(name),
-            ", ".join(registry.aliases_for(name)[:4]),
         )
-
     console.print(table)
-    console.print(
-        f"[dim]default {registry.active} · quick {registry.quick or '—'} · "
-        f"fallback {' → '.join(registry.fallback) or '—'}[/]"
-    )
+
+    if registry.parked:
+        console.print("\n[dim]parked — not routed to, and skipped by the fallback "
+                      "chain:[/]")
+        for name, reason in registry.parked.items():
+            console.print(f"  [dim]{name:12}[/] [yellow]{escape(reason)}[/]")
+
+    console.print()
+    if registry.pinned:
+        console.print(
+            f"[yellow]pinned to {registry.pinned}[/] — say [bold]\"auto\"[/] to let "
+            f"her choose again"
+        )
+    else:
+        order = " · ".join(
+            f"{tier}→{registry.for_tier(tier)}" for tier in registry.TIER_ORDER
+        )
+        console.print(f"[dim]{order}[/]")
+    # The effective chain, not the configured one: showing a parked brain
+    # here would contradict the table directly above.
+    effective = [n for n in registry.fallback if not registry.is_parked(n)]
+    console.print(f"[dim]fallback {' → '.join(effective) or '—'}[/]")
     layers = getattr(registry, "sources", None) or [find_config("brains.yaml")]
     console.print("[dim]config: " + " + ".join(str(p) for p in layers) + "[/]")
 

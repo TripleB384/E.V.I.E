@@ -238,3 +238,81 @@ class TestCliBrainHealth:
         status = await brain.health()
         assert status.health is Health.UNAUTHENTICATED
         assert not status.usable
+
+
+class TestParking:
+    """A brain you never set up should stay out of the way.
+
+    Distinct from one that is down. With no API key there is nothing to try,
+    so attempting it only produces a spoken "switching to..." for a brain the
+    user never configured.
+    """
+
+    def _registry(self, **missing):
+        brains = {}
+        for name, reason in missing.items():
+            brain = FakeBrain(name)
+            brain.missing = (lambda r=reason: r) if reason else (lambda: None)
+            brains[name] = brain
+        return BrainRegistry(
+            brains, default=next(iter(brains)), fallback=list(brains)
+        )
+
+    def test_unconfigured_brains_are_parked(self):
+        reg = self._registry(groq=None, gemini_api="$GEMINI_API_KEY is not set")
+        assert reg.usable() == ["groq"]
+        assert reg.parked == {"gemini_api": "$GEMINI_API_KEY is not set"}
+
+    def test_a_parked_brain_is_still_listed_and_nameable(self):
+        """Parking governs routing, not existence -- naming one should
+        explain what it needs, not claim it does not exist."""
+        reg = self._registry(groq=None, gemini_api="$GEMINI_API_KEY is not set")
+        assert "gemini_api" in reg.names()
+        assert reg.resolve("gemini_api") == "gemini_api"
+        assert reg.is_parked("gemini_api")
+
+    async def test_the_chain_skips_parked_brains_silently(self):
+        reg = self._registry(
+            claude="claude is not installed",
+            gemini_api="$GEMINI_API_KEY is not set",
+            groq=None,
+        )
+        text, notices = await collect(reg, brain="groq")
+        assert text == "ok"
+        assert notices == [], "no announcement for brains that were never set up"
+
+    async def test_naming_a_parked_brain_still_tries_it(self):
+        """An explicit request deserves the brain's own error, not silence."""
+        reg = self._registry(groq=None, gemini_api="$GEMINI_API_KEY is not set")
+        reg.get("gemini_api").fail = BrainUnavailable("$GEMINI_API_KEY is not set")
+        text, _ = await collect(reg, brain="gemini_api")
+        assert text == "ok", "should fall through to the configured brain"
+
+
+class TestPinning:
+    def test_use_pins_by_default(self):
+        reg = BrainRegistry(
+            {"a": FakeBrain("a"), "b": FakeBrain("b")}, default="a",
+            tiers={"simple": "a", "hard": "b"},
+        )
+        reg.use("b")
+        assert reg.pinned == "b"
+        assert reg.for_tier("simple") == "b", "a hand-picked brain must stick"
+
+    def test_unpin_restores_tier_routing(self):
+        reg = BrainRegistry(
+            {"a": FakeBrain("a"), "b": FakeBrain("b")}, default="a",
+            tiers={"simple": "a", "hard": "b"},
+        )
+        reg.use("b")
+        reg.unpin()
+        assert reg.for_tier("simple") == "a"
+
+    def test_reset_also_releases_the_pin(self):
+        reg = BrainRegistry(
+            {"a": FakeBrain("a"), "b": FakeBrain("b")}, default="a",
+            tiers={"simple": "a"},
+        )
+        reg.use("b")
+        reg.reset()
+        assert reg.pinned is None and reg.active == "a"

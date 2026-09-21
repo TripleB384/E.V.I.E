@@ -24,16 +24,26 @@
 # The router sends anything task-shaped (open, read, write, organize, check my
 # ...) to an agentic brain regardless of this setting, so you lose nothing.
 default: groq
-quick: groq
 
-# Tried in order when a brain is rate limited or down. Free tiers first, the
-# subscription behind them, local last so she still answers with no internet.
+# How hard is this, and who should handle it. The router scores each request
+# and picks the matching tier; a tier whose brain is unconfigured falls to the
+# next one down, so you never have to keep this in sync with your API keys.
+tiers:
+  simple:  groq        # greetings, short factual questions, one-liners
+  normal:  groq        # ordinary conversation and explanations
+  hard:    claude      # analysis, comparison, planning, writing at length
+  agentic: claude      # anything that touches files, the shell or MCP tools
+
+# Tried in order when a brain is rate limited or down. Unconfigured brains are
+# skipped automatically -- no key, no attempt -- so this list can name more
+# than you have set up.
 fallback:
   - groq
   - gemini_api
   - openrouter
   - github
   - claude
+  - ollama_cloud
   - ollama
 
 brains:
@@ -108,11 +118,23 @@ brains:
     api_key_env: OPENROUTER_API_KEY
     aliases: [openrouter, router]
 
+  # Ollama, hosted. An API key from ollama.com/settings/keys, no download.
+  # Free tier is for light use; past that it bills GPU time, not tokens.
+  ollama_cloud:
+    kind: openai
+    base_url: https://ollama.com/v1
+    model: gpt-oss:120b-cloud    # also deepseek-v3.1:671b-cloud, qwen3-coder:480b-cloud
+    api_key_env: OLLAMA_API_KEY
+    aliases: [ollama cloud, cloud, hosted ollama]
+
+  # Ollama, on your own machine. The only brain that works with no internet,
+  # and the only one with no limit of any kind -- but it needs the download.
   ollama:
     kind: openai
     base_url: http://localhost:11434/v1
     model: qwen3:8b              # `ollama pull qwen3:8b` first
-    aliases: [local, offline, ollama, on device]
+    enabled: false               # off until you install it
+    aliases: [local, offline, on device]
 
   # --- always available, needs nothing ------------------------------------
 

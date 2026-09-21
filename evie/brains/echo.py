@@ -27,6 +27,9 @@ class EchoBrain:
                 await asyncio.sleep(self.delay)
             yield word + " "
 
+    def missing(self) -> str | None:
+        return None
+
     async def health(self) -> BrainStatus:
         return BrainStatus(Health.OK, "always available")
 

@@ -169,6 +169,10 @@ class CliBrain:
 
     # -- health ----------------------------------------------------------
 
+    def missing(self) -> str | None:
+        exe = self.spec.command[0]
+        return None if shutil.which(exe) else f"{exe} is not installed"
+
     async def health(self) -> BrainStatus:
         """Report what we actually know, which is less than you'd like.
 
