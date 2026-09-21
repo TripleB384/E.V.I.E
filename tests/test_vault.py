@@ -61,3 +61,80 @@ class TestNotes:
         vault = Vault(tmp_path / "v").ensure()
         vault.note("business", "pricing").write_text("# pricing\n\nten dollars")
         assert "ten dollars" in vault.note("business", "pricing").read_text()
+
+
+class TestGitBackup:
+    """A vault on one laptop is one spilled drink from gone.
+
+    Git gives free versioned backup to a private repo and keeps everything
+    plain files, so Obsidian and agentic brains work on it unchanged.
+    """
+
+    def _vault_and_remote(self, tmp_path):
+        import subprocess
+
+        from evie.memory import Vault, VaultGit
+
+        remote = tmp_path / "remote.git"
+        subprocess.run(["git", "init", "-q", "--bare", str(remote)], check=True)
+        vault = Vault(tmp_path / "vault").ensure("test")
+        return vault, VaultGit(vault), remote
+
+    def test_sync_before_setup_says_so(self, tmp_path):
+        from evie.memory import GitError, Vault, VaultGit
+
+        git = VaultGit(Vault(tmp_path / "v").ensure())
+        try:
+            git.sync()
+            raise AssertionError("should have refused")
+        except GitError as exc:
+            assert "not a git repo" in str(exc)
+
+    def test_setup_then_sync_pushes_the_vault(self, tmp_path):
+        import subprocess
+
+        vault, git, remote = self._vault_and_remote(tmp_path)
+        vault.log("you", "the compiler project is due Thursday")
+
+        git.setup(str(remote))
+        assert git.initialized and git.remote() == str(remote)
+        assert "synced" in git.sync()
+
+        listed = subprocess.run(
+            ["git", "--git-dir", str(remote), "ls-tree", "-r", "--name-only", "main"],
+            capture_output=True, text=True, check=True,
+        ).stdout.split()
+        assert "EVIE.md" in listed
+        assert any(f.startswith("daily/") for f in listed)
+
+    def test_a_second_sync_with_no_changes_is_a_no_op(self, tmp_path):
+        vault, git, remote = self._vault_and_remote(tmp_path)
+        git.setup(str(remote))
+        git.sync()
+        assert "up to date" in git.sync()
+
+    def test_setup_is_repeatable(self, tmp_path):
+        vault, git, remote = self._vault_and_remote(tmp_path)
+        git.setup(str(remote))
+        git.setup(str(remote))  # must not fail on an existing remote
+        assert git.remote() == str(remote)
+
+
+class TestStats:
+    def test_it_counts_what_is_there(self, tmp_path):
+        from evie.memory import Vault, stats
+
+        vault = Vault(tmp_path / "v").ensure()
+        vault.log("you", "something worth keeping")
+        vault.note("classes", "CS 320")
+
+        info = stats(vault)
+        assert info["files"] >= 3        # EVIE.md, a daily log, a class note
+        assert info["days"] == 1
+        assert info["bytes"] > 0
+
+    def test_an_empty_vault_reports_cleanly(self, tmp_path):
+        from evie.memory import Vault, stats
+
+        info = stats(Vault(tmp_path / "v").ensure())
+        assert info["days"] == 0 and info["first"] is None

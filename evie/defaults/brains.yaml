@@ -15,12 +15,25 @@
 # (`evie brains use gemini`), or automatically when one runs out of quota.
 # ---------------------------------------------------------------------------
 
-default: claude        # who answers when you haven't said otherwise
-quick: groq            # short questions get routed here instead -- fast and free
-fallback:              # tried in order when a brain is rate limited or down
-  - claude
-  - gemini_cli
+# Conversation goes to the fastest free brain; work escalates to one with
+# hands. Measured on real hardware: `claude -p` takes 5-11s to first token
+# because every call boots a whole Claude Code session, while Groq answers in
+# well under a second. Defaulting to Claude meant paying that wait -- and plan
+# allowance -- for "what time is it".
+#
+# The router sends anything task-shaped (open, read, write, organize, check my
+# ...) to an agentic brain regardless of this setting, so you lose nothing.
+default: groq
+quick: groq
+
+# Tried in order when a brain is rate limited or down. Free tiers first, the
+# subscription behind them, local last so she still answers with no internet.
+fallback:
   - groq
+  - gemini_api
+  - openrouter
+  - github
+  - claude
   - ollama
 
 brains:
@@ -79,7 +92,6 @@ brains:
     model: gemini-2.5-flash
     api_key_env: GEMINI_API_KEY  # free key from aistudio.google.com
     daily_limit: 1500
-    enabled: false
     aliases: [gemini api, flash]
 
   github:
@@ -87,7 +99,6 @@ brains:
     base_url: https://models.github.ai/inference
     model: openai/gpt-4o         # check the catalog; model ids change
     api_key_env: GITHUB_TOKEN
-    enabled: false
     aliases: [github, copilot, github models]
 
   openrouter:
@@ -95,14 +106,12 @@ brains:
     base_url: https://openrouter.ai/api/v1
     model: deepseek/deepseek-chat-v3.1:free
     api_key_env: OPENROUTER_API_KEY
-    enabled: false
     aliases: [openrouter, router]
 
   ollama:
     kind: openai
     base_url: http://localhost:11434/v1
     model: qwen3:8b              # `ollama pull qwen3:8b` first
-    enabled: false
     aliases: [local, offline, ollama, on device]
 
   # --- always available, needs nothing ------------------------------------

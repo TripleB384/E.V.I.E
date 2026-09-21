@@ -143,13 +143,38 @@ class TestShippedDefaults:
         from evie.config import PACKAGE_DEFAULTS
 
         reg = load_registry(PACKAGE_DEFAULTS / "brains.yaml")
-        assert reg.active == "claude"
         assert reg.resolve("google") == "gemini_cli"
         assert reg.get("claude").agentic, "a CLI brain must be able to use tools"
         assert not reg.get("groq").agentic, "an HTTP brain has no hands"
         # Everything the fallback chain names must actually be loadable, or
         # the chain silently gets shorter than it looks.
         assert all(n in reg.names() for n in reg.fallback)
+
+    def test_conversation_defaults_to_a_fast_brain(self):
+        """`claude -p` measured 5-11s to first token because each call boots a
+        Claude Code session. That is the wrong default for talking to someone,
+        and it spends plan allowance on small talk."""
+        from evie.config import PACKAGE_DEFAULTS
+
+        reg = load_registry(PACKAGE_DEFAULTS / "brains.yaml")
+        assert not reg.get(reg.active).agentic, (
+            "the default brain should be a fast conversational one; the router "
+            "escalates task-shaped requests to an agentic brain on its own"
+        )
+
+    def test_an_agentic_brain_is_still_reachable(self):
+        """Escalation has somewhere to go, or real work silently degrades."""
+        from evie.config import PACKAGE_DEFAULTS
+
+        reg = load_registry(PACKAGE_DEFAULTS / "brains.yaml")
+        assert any(reg.get(n).agentic for n in reg.names())
+
+    def test_the_fallback_chain_ends_somewhere_offline(self):
+        from evie.config import PACKAGE_DEFAULTS
+
+        reg = load_registry(PACKAGE_DEFAULTS / "brains.yaml")
+        assert "ollama" in reg.fallback, "last resort should work with no internet"
+        assert reg.fallback.index("ollama") == len(reg.fallback) - 1
 
     def test_disabled_brains_contribute_no_aliases(self):
         """Otherwise "switch to local" resolves to a brain that isn't there."""

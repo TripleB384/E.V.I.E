@@ -256,6 +256,94 @@ def brains_use(name: str) -> None:
     console.print(f"[green]✓[/] default brain is now [bold]{target}[/] ({path})")
 
 
+# -- memory --------------------------------------------------------------
+
+
+@main.group(invoke_without_command=True)
+@click.pass_context
+def memory(ctx: click.Context) -> None:
+    """Inspect and back up what she remembers."""
+    if ctx.invoked_subcommand is None:
+        ctx.invoke(memory_status)
+
+
+@memory.command("status")
+def memory_status() -> None:
+    """Show what is in the vault, how big it is, and whether it is backed up."""
+    from .config import Settings
+    from .memory import Vault, VaultGit, stats
+
+    settings = Settings.load()
+    vault = Vault(settings.vault)
+    if not vault.exists:
+        _fail(f"no vault at {vault.root}", "Run `evie init`.")
+
+    info = stats(vault)
+    kb = info["bytes"] / 1024
+    console.print(f"[bold]{vault.root}[/]")
+    console.print(
+        f"  {info['files']} notes · {info['days']} days logged · "
+        f"[bold]{kb:.0f} KB[/] total"
+    )
+    if info["first"]:
+        console.print(f"  from {info['first']} to {info['last']}")
+
+    # Put the size in terms anyone can judge.
+    if kb < 5000:
+        console.print(
+            f"  [dim]For scale: a decade at this rate is about "
+            f"{kb * 10 / max(info['days'], 1) * 365 / 1024:.0f} MB. "
+            f"Disk is not your constraint.[/]"
+        )
+
+    git = VaultGit(vault)
+    if not git.initialized:
+        console.print(
+            "\n  [yellow]Not backed up.[/] One copy, one machine. To fix, make an "
+            "empty\n  [bold]private[/] repo on GitHub and run:\n"
+            "    [bold]evie memory setup git@github.com:you/evie-vault.git[/]"
+        )
+    elif remote := git.remote():
+        console.print(f"\n  [green]backed up[/] → {remote}")
+    else:
+        console.print("\n  [yellow]local git only[/] — no remote set")
+
+
+@memory.command("setup")
+@click.argument("remote")
+def memory_setup(remote: str) -> None:
+    """Point the vault at a private git remote for free, versioned backup."""
+    from .config import Settings
+    from .memory import GitError, Vault, VaultGit
+
+    vault = Vault(Settings.load().vault)
+    if not vault.exists:
+        _fail(f"no vault at {vault.root}", "Run `evie init`.")
+    try:
+        git = VaultGit(vault)
+        git.setup(remote)
+        console.print(f"[green]✓[/] {vault.root} → {remote}")
+        console.print("  Now run [bold]evie memory sync[/] to push what she already has.")
+    except GitError as exc:
+        _fail(str(exc))
+
+
+@memory.command("sync")
+@click.option("--message", "-m", default=None, help="Commit message.")
+def memory_sync(message: str | None) -> None:
+    """Commit and push the vault."""
+    from .config import Settings
+    from .memory import GitError, Vault, VaultGit
+
+    vault = Vault(Settings.load().vault)
+    if not vault.exists:
+        _fail(f"no vault at {vault.root}", "Run `evie init`.")
+    try:
+        console.print(f"[green]✓[/] {VaultGit(vault).sync(message)}")
+    except GitError as exc:
+        _fail(str(exc), "Check the remote exists and you can push to it.")
+
+
 # -- setup and diagnosis -------------------------------------------------
 
 
