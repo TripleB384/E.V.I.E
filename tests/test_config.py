@@ -562,3 +562,54 @@ class TestOverrideWrites:
         written = yaml.safe_load((tmp_path / ".evie" / "brains.yaml").read_text())
         assert written["default"] == "claude"
         assert written["brains"]["gemini_cli"]["enabled"] is False
+
+
+class TestShippedModelIds:
+    """Two shipped model ids were retired underneath us in two days.
+
+    gemini-2.5-flash went first, then deepseek/deepseek-chat-v3.1:free, both
+    mid-conversation, both as a 404 the user had to decode. Nothing here can
+    stop a provider retiring a model, but it can stop us shipping one we
+    already know is gone.
+    """
+
+    def _brains(self):
+        import yaml
+
+        from evie.config import PACKAGE_DEFAULTS
+
+        return yaml.safe_load((PACKAGE_DEFAULTS / "brains.yaml").read_text())["brains"]
+
+    def test_openrouter_points_at_the_router_not_a_single_free_slug(self):
+        """OpenRouter's free roster turns over constantly. `openrouter/free`
+        picks from whatever is free at the time, so it cannot go stale the
+        way a pinned `:free` slug does."""
+        assert self._brains()["openrouter"]["model"] == "openrouter/free"
+
+    def test_no_known_retired_model_is_shipped(self):
+        retired = {
+            "gemini-2.5-flash",                  # 404 for new users, Sep 2026
+            "deepseek/deepseek-chat-v3.1:free",  # paid-only, Sep 2026
+        }
+        shipped = {spec.get("model") for spec in self._brains().values()}
+        assert not (shipped & retired), f"retired model still shipped: {shipped & retired}"
+
+    def test_grok_resolves_to_groq(self):
+        """The most common mishearing in the whole system. Prefix matching
+        cannot reach it -- a substituted final letter is not a prefix -- and
+        edit distance was rejected because it sends "clod" to Ollama Cloud."""
+        from evie.config import PACKAGE_DEFAULTS
+
+        reg = load_registry(PACKAGE_DEFAULTS / "brains.yaml")
+        assert reg.resolve("grok") == "groq"
+
+    def test_every_shipped_brain_can_say_what_it_is(self):
+        """`describe()` is injected into the system prompt each turn, so a
+        brain that cannot answer leaves a model guessing -- which is how
+        gpt-oss-120b came to call itself GPT-4."""
+        from evie.config import PACKAGE_DEFAULTS
+
+        reg = load_registry(PACKAGE_DEFAULTS / "brains.yaml")
+        for name in reg.names():
+            said = reg.describe(name)
+            assert said and said != name, f"{name} has no description"

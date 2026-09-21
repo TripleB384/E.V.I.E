@@ -330,3 +330,69 @@ class TestWhoIsAnswering:
         # One of these reached a model, which invented an account of its own
         # routing. The router knows the answer for free.
         assert route(said, reg).action is Action.REPLY
+
+
+class TestSheClaimsSwitchesThatNeverHappened:
+    """Every line here was said out loud in one voice session.
+
+    Three of them reached a model, and the model answered as if it were the
+    router: "Got it—switching over to the Grok brain now" and "Switched to
+    auto routing", with nothing switched either time. A confirmation that
+    isn't true is worse than no answer, because you stop checking.
+    """
+
+    import pytest as _pytest
+
+    @_pytest.mark.parametrize(
+        "said",
+        [
+            "Eevee, can you tell me which brain / AI model you're using right now",
+            "my bad I meant which brain you're using",
+            "and then tell me which brain you're using",
+            "so what AI are you",
+            "what brain are you on",
+        ],
+    )
+    def test_the_question_need_not_start_the_utterance(self, reg, said):
+        assert route(said, reg).action is Action.REPLY, f"{said!r} reached a model"
+
+    def test_grok_is_groq(self, reg_full):
+        """The most common mishearing in the system, and prefix matching
+        cannot reach it: a substituted final letter is not a prefix."""
+        assert reg_full.resolve("grok") == "groq"
+        assert reg_full.resolve("Grok") == "groq"
+
+    def test_switching_to_grok_switches_for_real(self, reg_full):
+        reg_full.use("claude")
+        decision = route("Eevee switched to Grok.", reg_full)
+        assert decision.action is Action.REPLY, "must not reach a model"
+        assert reg_full.active == "groq"
+
+    @_pytest.mark.parametrize(
+        "said",
+        ["if you go back to auto routing.", "reset to auto",
+         "so just go back to automatic", "okay you choose"],
+    )
+    def test_auto_tolerates_a_lead_in(self, reg, said):
+        reg.use("claude")
+        assert "Choosing" in route(said, reg).text
+        assert reg.pinned is None
+
+    @_pytest.mark.parametrize("said", ["switch back to claude", "go back to claude"])
+    def test_going_back_to_a_named_brain_is_a_switch_not_a_reset(self, reg, said):
+        """`_RESET` used to swallow the brain name: "switch back to Claude"
+        matched "switch back" and reset to the default instead."""
+        reg.use("groq")
+        route(said, reg)
+        assert reg.active == "claude"
+
+    @_pytest.mark.parametrize(
+        "said",
+        ["what is the best model for our pricing",
+         "explain why you should switch back to Claude",
+         "what is the resale value of that model"],
+    )
+    def test_ordinary_questions_are_not_stolen_from_a_model(self, reg, said):
+        # Widening the intercepts must not start eating real questions:
+        # answering "I'm running on claude" to any of these is nonsense.
+        assert route(said, reg).action is Action.ANSWER

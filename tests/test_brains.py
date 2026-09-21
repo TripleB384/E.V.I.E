@@ -26,14 +26,19 @@ class FakeBrain:
 
     missing = staticmethod(lambda: None)  # configured, unless a test says otherwise
 
-    def __init__(self, name, *, fail=None, text="ok", agentic=False, fail_after=0):
+    def __init__(self, name, *, fail=None, text="ok", agentic=False, fail_after=0,
+                 model="fake-1"):
         self.name = name
         self.agentic = agentic
         self.fail = fail
         self.text = text
         self.fail_after = fail_after
+        self.model = model
         self.calls = 0
         self.prompts = []
+
+    def describe(self):
+        return f"the {self.model} model"
 
     async def stream(self, prompt, ctx):
         self.calls += 1
@@ -379,3 +384,50 @@ class TestErrorClassification:
 
     def test_429_is_exhausted(self):
         assert isinstance(self._classify(429, "slow down"), BrainExhausted)
+
+
+class TestDescribe:
+    """What goes into the system prompt when a brain is asked what it is.
+
+    It has to be true. A model left to answer from its own weights said
+    "GPT-4" three times while running on Groq's gpt-oss-120b.
+    """
+
+    def test_an_http_brain_names_its_model_and_host(self):
+        from evie.brains import HttpBrainSpec, OpenAICompatBrain
+
+        brain = OpenAICompatBrain(
+            HttpBrainSpec("groq", "https://api.groq.com/openai/v1", "openai/gpt-oss-120b")
+        )
+        said = brain.describe()
+        assert "openai/gpt-oss-120b" in said
+        assert "api.groq.com" in said
+
+    def test_a_cli_brain_does_not_invent_a_model_id(self):
+        """Which model `claude -p` picks comes from that tool's own config
+        and can change between calls, so naming one here would be a guess."""
+        from evie.brains import CliBrain, CliBrainSpec
+
+        said = CliBrain(CliBrainSpec("claude", ["claude", "-p", "{prompt}"])).describe()
+        assert "claude" in said
+        assert "sonnet" not in said and "opus" not in said
+
+    def test_the_registry_describes_through_an_alias(self):
+        reg = registry(groq=FakeBrain("groq", model="gpt-oss"), aliases={"fast": "groq"})
+        assert "gpt-oss" in reg.describe("fast")
+
+    def test_a_brain_without_describe_falls_back_to_its_name(self):
+        class Older:
+            name = "old"
+            agentic = False
+
+            def missing(self):
+                return None
+
+            async def stream(self, prompt, ctx):
+                yield "hi"
+
+            async def health(self):
+                raise NotImplementedError
+
+        assert registry(old=Older()).describe("old") == "old"

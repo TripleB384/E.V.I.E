@@ -58,12 +58,52 @@ class Assistant:
         "say so in one short clause and let it be written for you."
     )
 
-    def _identity(self, agentic: bool = True) -> str:
+    # A model asked what it is answers from its training data, which describes
+    # the weights and knows nothing about this deployment. Groq's gpt-oss-120b
+    # said "I'm running on OpenAI's GPT-4 model" three times in one session.
+    # No regex fixes that, because the phrasings are unbounded -- the only
+    # real fix is telling the brain the truth before it is asked.
+    _WHOAMI = (
+        "\n\n## Which brain you are, right now\n\n"
+        "This turn is being answered by the brain named {name} — {what}. "
+        "{routing}\n\n"
+        "If you are asked which brain, model, AI or architecture you are, "
+        "answer from the line above and nothing else. What you remember "
+        "about your own identity describes the model, not this assistant, and "
+        "saying it would be wrong. You are E.V.I.E. either way; {name} is "
+        "only what is thinking for you at the moment."
+    )
+
+    def _routing_note(self, name: str) -> str:
+        pinned = self.registry.pinned
+        if pinned == name:
+            return (
+                "You were chosen by hand and stay until that is released, "
+                "so do not offer to switch unless asked."
+            )
+        if pinned:
+            # A pin that could not be honoured -- agentic work sent to a
+            # brain with hands. Say so, or the next "which brain" answer
+            # contradicts the last switch confirmation.
+            return (
+                f"{pinned} was picked by hand but cannot do this kind of work, "
+                f"so this one turn came here instead."
+            )
+        return "No brain is pinned; this one was chosen for this request."
+
+    def _identity(self, brain: str | None = None) -> str:
         if self.vault and self.vault.exists and (found := self.vault.identity()):
             base = found
         else:
             base = load_identity(self.settings)
-        return base if agentic else base + self._NO_HANDS
+        if brain is None:
+            return base
+        base += self._WHOAMI.format(
+            name=brain,
+            what=self.registry.describe(brain),
+            routing=self._routing_note(brain),
+        )
+        return base if self.registry.get(brain).agentic else base + self._NO_HANDS
 
     # -- one turn --------------------------------------------------------
 
@@ -97,10 +137,11 @@ class Assistant:
         spoken: list[str] = []
         used = decision.brain or self.registry.active
 
-        # Tell the brain what it can actually do, since that changes per turn:
-        # the same conversation may be answered by a CLI brain with file tools
-        # and then by an HTTP brain with none.
-        self.ctx.system = self._identity(self.registry.get(used).agentic)
+        # Rebuilt every turn, because both halves change per turn: which
+        # brain is answering, and whether it has hands. The same conversation
+        # may be answered by a CLI brain with file tools and then by an HTTP
+        # brain with none.
+        self.ctx.system = self._identity(used)
 
         async for kind, chunk in self.registry.stream(
             decision.text, self.ctx, brain=decision.brain

@@ -64,27 +64,84 @@ _SWITCH = re.compile(
 )
 _USE = re.compile(
     r"^(?:please\s+|let'?s\s+|can\s+you\s+|could\s+you\s+)*"
-    r"(?:chang(?:e|ed|es|ing)|us(?:e|ed|es|ing)|run(?:ning)?\s+on|go(?:ing)?\s+to)\s+"
+    r"(?:chang(?:e|ed|es|ing)|us(?:e|ed|es|ing)|run(?:ning)?\s+on|"
+    r"go(?:ing)?\s+(?:back\s+)?to)\s+"
     r"(?:over\s+)?(?:to\s+)?(?:the\s+)?(.+?)"
     r"(?:\s+brain|\s+model|\s+instead|\s+please)?[.!?]*$",
     re.IGNORECASE,
 )
-# Any way of asking who is answering. The old pattern demanded the phrase
-# "running on|using|on", so "what brain did you use?" reached a model, which
-# then made up an account of its own routing.
+# Leading filler. Speech does not start where the command starts: "and then
+# tell me which brain you're using", "if you go back to auto routing" and
+# "so what brain are you on" all carry the real request in the middle, and
+# every start-anchored pattern below missed all three.
+#
+# Bounded on purpose — it swallows conjunctions, politeness and a short lead-in
+# verb, not arbitrary text, so "explain why you should switch back to Claude"
+# stays a question for a model rather than becoming a command.
+_FILLER = (
+    r"^(?:\s*(?:and|so|but|then|also|now|ok(?:ay)?|well|um+|uh+|"
+    r"please|actually|wait|hey|yeah|yes|no|hmm+|"
+    r"i\s+(?:said|meant|want(?:ed)?\s+to\s+know|wonder(?:ed)?)|"
+    r"my\s+bad|sorry|just|quick(?:ly)?|maybe|can\s+you|could\s+you|"
+    r"would\s+you|will\s+you|do\s+you\s+know|tell\s+me|remind\s+me|"
+    r"let'?s|if(?:\s+you)?)\b[\s,.:;-]*){0,4}"
+)
+
+# Asking to be told who is answering, in some form. Two earlier versions were
+# too strict: the first demanded the literal phrase "running on|using|on", so
+# "what brain did you use?" missed; the second demanded that the question
+# start the utterance, so "...and then tell me which brain you're using" and
+# "my bad I meant which brain you're using" both missed. Speech rarely starts
+# where the question does.
+#
+# "brain", "ai" and "llm" are taken as self-referential on their own, because
+# in this assistant they mean nothing else. "model" is not -- "what is the
+# best model for our pricing" is an ordinary question -- so it is only a
+# swap query when the sentence also says *you* are on or using it.
+_SELF_USE = (
+    r"(?:you'?re|you\s+are|are\s+you|do\s+you|did\s+you|you)\s+"
+    r"(?:currently\s+|still\s+)?(?:on|us(?:e|ed|ing)|runn?ing|power\w*)\b"
+)
 _WHICH = re.compile(
-    r"^(?:who|what|which)\s+(?:brain|model|ai|llm)\b.*$"
-    r"|^(?:who|what)\s+(?:are\s+you\s+)?(?:running\s+on|using)\b.*$"
-    r"|^are\s+you\s+(?:still\s+)?(?:on|using)\b.*$",
+    _FILLER + r"(?:"
+    # "which brain", "what other brain", "what AI"
+    r"(?:who|what|which)\s+(?:\w+\s+){0,1}?(?:brains?|ai|llm)\b"
+    # "...which model you're using", "what brain did you use to answer that"
+    r"|(?:who|what|which)\b[^.?!]{0,50}?\b(?:brains?|models?|ai|llm)\b"
+    r"[^.?!]{0,30}?\b" + _SELF_USE +
+    r"|(?:who|what)\s+(?:are\s+you\s+)?(?:running\s+on|using)\b"
+    r"|are\s+you\s+(?:still\s+)?(?:on|using)\b"
+    r")",
     re.IGNORECASE,
 )
-_LIST = re.compile(r"^(?:list|what are)\s+(?:your\s+)?brains?\b.*$", re.IGNORECASE)
-_RESET = re.compile(r"^(?:go\s+back|switch\s+back|reset)\b.*$", re.IGNORECASE)
+_LIST = re.compile(
+    _FILLER + r"(?:list|what are)\s+(?:your\s+)?brains?\b", re.IGNORECASE
+)
+# "Go back" on its own means the default brain. Anchored to the end of the
+# utterance, because "switch back to Claude" is a switch, not a reset --
+# unanchored, it swallowed the brain name and quietly reset instead.
+_RESET = re.compile(
+    _FILLER + r"(?:go\s+back|switch\s+back|reset)"
+    r"(?:\s+to\s+(?:the\s+)?(?:default|normal|usual|start|beginning))?"
+    r"[\s.!?]*$",
+    re.IGNORECASE,
+)
 # Hand routing back to the tiers after pinning a brain by hand.
+#
+# "if you go back to auto routing" reached a model, which confirmed a switch
+# that never happened -- so the lead-in has to be allowed, not just the bare
+# word.
+_BACK_TO = (
+    r"(?:(?:go(?:ing)?|switch(?:ing)?|revert(?:ing)?|reset(?:ting)?|"
+    r"fall(?:ing)?|put\s+(?:it|us))\s+)?(?:back\s+)?to\s+"
+)
 _AUTO = re.compile(
-    r"^(?:auto|automatic|you\s+(?:choose|pick|decide)|"
-    r"(?:choose|pick|decide)\s+(?:for\s+)?yourself|"
-    r"stop\s+using\s+\w+|unpin)\b.*$",
+    _FILLER + r"(?:" + _BACK_TO + r")?"
+    r"(?:auto(?:matic(?:ally)?)?\b(?:\s+(?:routing|route|mode|"
+    r"select\w*|pick\w*|choos\w*))?"
+    r"|you\s+(?:choose|pick|decide)"
+    r"|(?:choose|pick|decide)\s+(?:for\s+)?yourself"
+    r"|stop\s+using\s+\w+|unpin)\b",
     re.IGNORECASE,
 )
 _STOP = re.compile(r"^(?:stop|quiet|shut\s+up|never\s*mind|cancel)[.!?]*$", re.IGNORECASE)

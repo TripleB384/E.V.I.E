@@ -94,7 +94,11 @@ brains:
     model: openai/gpt-oss-120b
     api_key_env: GROQ_API_KEY    # free key from console.groq.com
     daily_limit: 1000
-    aliases: [groq, fast, quick, speedy]
+    # "grok" is the single most common mishearing here, and it cannot be
+    # reached by prefix matching -- a final-letter substitution is not a
+    # prefix of anything. Spelled out rather than solved with edit distance,
+    # which would also resolve "clod" to Ollama Cloud.
+    aliases: [groq, grok, grock, fast, quick, speedy]
 
   gemini_api:
     kind: openai
@@ -113,12 +117,22 @@ brains:
     api_key_env: GITHUB_TOKEN
     aliases: [github, copilot, github models]
 
+  # `openrouter/free` is a router, not a model: it picks from whatever is
+  # free on OpenRouter at the moment. Naming a specific `:free` slug here
+  # went stale twice in two days (deepseek-chat-v3.1:free was retired
+  # underneath us with a 404 mid-conversation), and the free roster turns
+  # over constantly -- 24 models one week, a different 24 the next. A router
+  # cannot be retired the same way.
+  #
+  # Free tier is 50 requests/day and 20/minute; buying 10 credits once
+  # raises the daily cap to 1000.
   openrouter:
     kind: openai
     base_url: https://openrouter.ai/api/v1
-    model: deepseek/deepseek-chat-v3.1:free
+    model: openrouter/free
     api_key_env: OPENROUTER_API_KEY
-    aliases: [openrouter, router]
+    daily_limit: 50
+    aliases: [openrouter, router, open route]
 
   # Ollama, hosted. An API key from ollama.com/settings/keys, no download.
   # Free tier is for light use; past that it bills GPU time, not tokens.

@@ -102,6 +102,15 @@ class Brain(Protocol):
     name: str
     agentic: bool  # can it read files, run commands, use tools?
 
+    def describe(self) -> str:
+        """What is actually behind this brain, in one phrase.
+
+        Injected into the system prompt so a brain asked what it is can
+        answer from fact rather than from its own training data, which
+        describes the weights and knows nothing about this deployment.
+        """
+        ...
+
     def missing(self) -> str | None:
         """Why this brain is not set up, cheaply. None means it is.
 

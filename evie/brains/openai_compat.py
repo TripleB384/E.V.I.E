@@ -15,6 +15,7 @@ import os
 import re
 from dataclasses import dataclass
 from typing import AsyncIterator
+from urllib.parse import urlparse
 
 import httpx
 
@@ -103,6 +104,16 @@ class OpenAICompatBrain:
             raise BrainUnavailable(f"cannot reach {self.spec.base_url}: {exc}") from exc
         except httpx.TimeoutException as exc:
             raise BrainUnavailable(f"{self.name} timed out") from exc
+
+    def describe(self) -> str:
+        """Model id and provider host, for telling a brain who it is.
+
+        A model asked what it is answers from its training data, which is
+        about the weights and not about this deployment -- one real session
+        had gpt-oss-120b on Groq insisting three times that it was GPT-4.
+        """
+        host = urlparse(self.spec.base_url).hostname or self.spec.base_url
+        return f"the {self.spec.model} model, served by {host}"
 
     def missing(self) -> str | None:
         if self.spec.api_key_env and not self._key:

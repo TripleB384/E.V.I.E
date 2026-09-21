@@ -194,6 +194,16 @@ class BrainRegistry:
     def get(self, name: str | None = None) -> Brain:
         return self._brains[self.resolve(name) if name else self._active]
 
+    def describe(self, name: str | None = None) -> str:
+        """One phrase saying what is behind a brain, for the system prompt.
+
+        A brain predating `describe()` gets its own name back, which is true
+        if uninformative.
+        """
+        resolved = self.resolve(name) if name else self._active
+        tell = getattr(self._brains[resolved], "describe", None)
+        return tell() if callable(tell) else resolved
+
     @property
     def active(self) -> str:
         return self._active

@@ -169,6 +169,15 @@ class CliBrain:
 
     # -- health ----------------------------------------------------------
 
+    def describe(self) -> str:
+        """What this brain is, without claiming a model id we do not have.
+
+        Which model the CLI picks is its own business -- it comes from that
+        tool's config and can change between calls -- so naming one here
+        would be a guess dressed up as a fact.
+        """
+        return f"the {self.spec.command[0]} command-line tool"
+
     def missing(self) -> str | None:
         exe = self.spec.command[0]
         return None if shutil.which(exe) else f"{exe} is not installed"
