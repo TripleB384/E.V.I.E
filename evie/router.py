@@ -35,15 +35,37 @@ class Decision:
 
 
 # Leading "evie, ..." is address, not content.
-_ADDRESS = re.compile(r"^\s*(hey\s+|ok\s+)?(evie|eevee|evy|ivy)[\s,.:!-]+", re.IGNORECASE)
+#
+# Whisper does not hear a name, it hears phonemes, and "Evie" comes back as
+# EV, E.V., Eevee, Evee, Eve, Ivy, Avi and more. Matching only the spelling
+# meant a command was forwarded to a model, which then earnestly explained it
+# could not change models -- a baffling answer to a question that should never
+# have reached it.
+#
+# Anchored to the very start and requiring a separator, so "the eve of the
+# election" cannot be mistaken for being spoken to.
+# "even" and bare "iv" are deliberately absent: both are ordinary words, and
+# "even though I tried" was being heard as being spoken to.
+_NAME = r"(?:e+v+(?:ie|ee|y|e)?|e\.?\s?v\.?|ivy|avi[ae]?|eevie)"
+_ADDRESS = re.compile(
+    rf"^\s*(?:hey\s+|ok(?:ay)?\s+|yo\s+)?{_NAME}[\s,.:!?-]+",
+    re.IGNORECASE,
+)
 
+# Speech comes out inflected. "Switched to Gemini", "switching to Gemini" and
+# "let's use Gemini" all mean the same thing, and matching only bare stems sent
+# every one of them to a model.
 _SWITCH = re.compile(
-    r"^(?:please\s+)?(?:switch|change|swap|flip)\s+(?:over\s+)?to\s+(?:the\s+)?(.+?)"
-    r"(?:\s+brain|\s+model|\s+please)?[.!?]*$",
+    r"^(?:please\s+|let'?s\s+|can\s+you\s+|could\s+you\s+)*"
+    r"(?:switch|swap|flip|jump|mov)(?:e|ed|es|ing)?\s+"
+    r"(?:over\s+|back\s+)?(?:to|two|too)\s+(?:the\s+)?(.+?)"
+    r"(?:\s+brain|\s+model|\s+please|\s+instead)?[.!?]*$",
     re.IGNORECASE,
 )
 _USE = re.compile(
-    r"^(?:please\s+)?(?:use|run\s+on|go\s+to)\s+(?:the\s+)?(.+?)"
+    r"^(?:please\s+|let'?s\s+|can\s+you\s+|could\s+you\s+)*"
+    r"(?:chang(?:e|ed|es|ing)|us(?:e|ed|es|ing)|run(?:ning)?\s+on|go(?:ing)?\s+to)\s+"
+    r"(?:over\s+)?(?:to\s+)?(?:the\s+)?(.+?)"
     r"(?:\s+brain|\s+model|\s+instead|\s+please)?[.!?]*$",
     re.IGNORECASE,
 )

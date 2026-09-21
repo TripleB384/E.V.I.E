@@ -91,3 +91,48 @@ class TestIdentity:
         reg = BrainRegistry({"echo": EchoBrain()}, default="echo")
         a = Assistant(reg, Settings(vault=vault.root), vault)
         assert "three words" in a.ctx.system
+
+
+class TestToolAwareIdentity:
+    """A brain with no file access should not narrate file writes.
+
+    One real reply ended with "*Vault note:* User asked about the current
+    model." Nothing was written — EVIE.md instructs her to keep things in the
+    vault, and a brain without hands described doing so instead.
+    """
+
+    def _assistant(self, tmp_path):
+        from evie.brains import BrainRegistry
+        from tests.test_brains import FakeBrain
+
+        vault = Vault(tmp_path / "v").ensure("test")
+        (vault.root / "EVIE.md").write_text("You are E.V.I.E. Keep notes in the vault.")
+
+        hands = FakeBrain("claude", agentic=True)
+        no_hands = FakeBrain("groq", agentic=False)
+        reg = BrainRegistry(
+            {"claude": hands, "groq": no_hands}, default="groq",
+            tiers={"simple": "groq", "agentic": "claude"},
+        )
+        return Assistant(reg, Settings(vault=vault.root), vault)
+
+    async def test_a_toolless_brain_is_told_it_has_no_hands(self, tmp_path):
+        a = self._assistant(tmp_path)
+        await a.ask("what's the capital of Peru")
+        sent = a.registry.get("groq").prompts[0]
+        assert "no file access" in a.ctx.system
+        assert "Never describe saving" in a.ctx.system
+        assert sent, "the brain was still called"
+
+    async def test_an_agentic_brain_gets_the_identity_unaltered(self, tmp_path):
+        a = self._assistant(tmp_path)
+        await a.ask("organize my notes")
+        assert "no file access" not in a.ctx.system
+        assert "Keep notes in the vault" in a.ctx.system
+
+    async def test_it_switches_back_and_forth_within_one_conversation(self, tmp_path):
+        a = self._assistant(tmp_path)
+        await a.ask("organize my notes")            # agentic -> claude
+        assert "no file access" not in a.ctx.system
+        await a.ask("what's the capital of Peru")   # simple -> groq
+        assert "no file access" in a.ctx.system

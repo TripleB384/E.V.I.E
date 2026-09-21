@@ -38,7 +38,8 @@ class Assistant:
         self.registry = registry
         self.settings = settings
         self.vault = vault
-        self.ctx = Context(system=self._identity())
+        self._base_identity = self._identity()
+        self.ctx = Context(system=self._base_identity)
 
     @classmethod
     def load(cls, settings: Settings | None = None) -> "Assistant":
@@ -46,10 +47,23 @@ class Assistant:
         vault = Vault(settings.vault)
         return cls(load_registry(), settings, vault if vault.exists else None)
 
-    def _identity(self) -> str:
+    # EVIE.md tells her to write things into the vault. A brain with no file
+    # access cannot, so it narrates the write instead -- one real reply ended
+    # with a fabricated "*Vault note:* User asked about the current model."
+    # Nothing was written; it was describing an action it could not take.
+    _NO_HANDS = (
+        "\n\nFor this reply you have no file access: you cannot read or write "
+        "the vault. Answer from what you have been given. Never describe "
+        "saving, noting or filing anything — if something is worth keeping, "
+        "say so in one short clause and let it be written for you."
+    )
+
+    def _identity(self, agentic: bool = True) -> str:
         if self.vault and self.vault.exists and (found := self.vault.identity()):
-            return found
-        return load_identity(self.settings)
+            base = found
+        else:
+            base = load_identity(self.settings)
+        return base if agentic else base + self._NO_HANDS
 
     # -- one turn --------------------------------------------------------
 
@@ -82,6 +96,12 @@ class Assistant:
 
         spoken: list[str] = []
         used = decision.brain or self.registry.active
+
+        # Tell the brain what it can actually do, since that changes per turn:
+        # the same conversation may be answered by a CLI brain with file tools
+        # and then by an HTTP brain with none.
+        self.ctx.system = self._identity(self.registry.get(used).agentic)
+
         async for kind, chunk in self.registry.stream(
             decision.text, self.ctx, brain=decision.brain
         ):

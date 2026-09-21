@@ -219,3 +219,47 @@ class TestTierRouting:
     def test_agentic_never_lands_on_a_brain_without_hands(self, reg):
         reg.tiers = {"agentic": "groq"}  # misconfigured: groq has no tools
         assert reg.get(reg.for_tier("agentic")).agentic
+
+
+class TestHowWhisperActuallyHears:
+    """Transcription returns phonemes, not spelling.
+
+    Every string here came out of real speech-to-text for the word "Evie".
+    Two of them reached a model, which then explained it could not change
+    models -- a baffling answer to a question the router should have handled
+    itself, for free.
+    """
+
+    import pytest as _pytest
+
+    @_pytest.mark.parametrize(
+        "said,expected",
+        [
+            ("EV switch to Gemini", "gemini_cli"),
+            ("Eevee switched to Gemini.", "gemini_cli"),
+            ("E.V. switch to claude", "claude"),
+            ("Eve, use groq", "groq"),
+            ("Evie switching to claude", "claude"),
+            ("evie change to groq", "groq"),
+            ("Ivy, let's use groq", "groq"),
+            ("hey evie swap to claude", "claude"),
+            ("Evie, go to claude", "claude"),
+        ],
+    )
+    def test_mishearings_and_inflections_all_switch(self, reg, said, expected):
+        decision = route(said, reg)
+        assert decision.action is Action.REPLY, f"{said!r} reached a model"
+        assert reg.active == expected
+
+    @_pytest.mark.parametrize(
+        "said",
+        ["even though I tried that", "the eve of the election was tense",
+         "everything is fine", "evening plans are set", "ever since Tuesday"],
+    )
+    def test_ordinary_words_are_not_her_name(self, said):
+        assert strip_address(said) == said
+
+    def test_use_the_smallest_font_is_not_a_brain_swap(self, reg):
+        before = reg.active
+        assert route("use the smallest font", reg).action is Action.ANSWER
+        assert reg.active == before

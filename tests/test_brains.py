@@ -24,6 +24,8 @@ from evie.brains.registry import UnknownBrain
 class FakeBrain:
     """A brain that says what you tell it to, or fails how you tell it to."""
 
+    missing = staticmethod(lambda: None)  # configured, unless a test says otherwise
+
     def __init__(self, name, *, fail=None, text="ok", agentic=False, fail_after=0):
         self.name = name
         self.agentic = agentic
