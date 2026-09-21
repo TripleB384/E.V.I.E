@@ -211,6 +211,64 @@ class TestRepoHygiene:
             f"whatever this file said. Run: git rm --cached {path}"
         )
 
+    # Shapes of the credentials this project plausibly touches. Matching the
+    # prefix plus a run of key characters keeps `api_key_env: GROQ_API_KEY`
+    # and prose like "sk-ant-..." from tripping it.
+    SECRET_SHAPES = (
+        r"gsk_[A-Za-z0-9]{20,}",        # Groq
+        r"sk-ant-[A-Za-z0-9_-]{20,}",   # Anthropic
+        r"sk-[A-Za-z0-9]{32,}",         # OpenAI
+        r"ghp_[A-Za-z0-9]{20,}",        # GitHub
+        r"AIza[A-Za-z0-9_-]{30,}",      # Google
+        r"xi-api-key:\s*[A-Za-z0-9]{20,}",  # ElevenLabs
+    )
+
+    def test_no_tracked_file_contains_a_credential(self):
+        """This repo is public and its users paste API keys into shells.
+
+        Keys live in the environment and nothing writes them to disk, but that
+        is a property of today's code, not a guarantee about tomorrow's. Check
+        what is actually tracked.
+        """
+        import re
+        from pathlib import Path
+
+        root = Path(__file__).resolve().parents[1]
+        pattern = re.compile("|".join(self.SECRET_SHAPES))
+        offenders = []
+        for rel in sorted(self._tracked()):
+            path = root / rel
+            if not path.is_file():
+                continue
+            try:
+                text = path.read_text(errors="ignore")
+            except OSError:
+                continue
+            if match := pattern.search(text):
+                # Report the location and the shape, never the value.
+                offenders.append(f"{rel} (matched {match.re.pattern[:12]}…)")
+        assert not offenders, "credential-shaped strings in tracked files: " + "; ".join(
+            offenders
+        )
+
+    def test_the_scanner_would_catch_a_real_key(self):
+        """A scanner nobody has seen fail is not a scanner."""
+        import re
+
+        pattern = re.compile("|".join(self.SECRET_SHAPES))
+        assert pattern.search("GROQ_API_KEY=gsk_" + "a1B2c3D4e5F6g7H8i9J0k1L2")
+        assert pattern.search("token: ghp_" + "0123456789abcdefghijABCD")
+        # ...and would not fire on the config that names variables.
+        assert not pattern.search("api_key_env: GROQ_API_KEY")
+        assert not pattern.search("export GROQ_API_KEY=your_key_here")
+
+    def test_env_files_are_ignored(self):
+        from pathlib import Path
+
+        rules = (Path(__file__).resolve().parents[1] / ".gitignore").read_text()
+        for rule in (".env", "*.env"):
+            assert rule in rules, f"{rule} must be gitignored in a public repo"
+
     def test_the_defaults_that_should_ship_do(self):
         tracked = self._tracked()
         for name in ("brains.yaml", "config.yaml", "EVIE.md"):

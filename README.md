@@ -131,6 +131,29 @@ brain authenticates itself, the same way you'd use it from a terminal:
 
 Turn a brain on by setting `enabled: true` in `brains.yaml`.
 
+### Where keys live
+
+**In your environment, and nowhere else.** `brains.yaml` records the *name* of
+an environment variable, never its value:
+
+```yaml
+api_key_env: GROQ_API_KEY    # the name -- safe to commit
+```
+
+E.V.I.E. reads `os.environ` at call time and never writes a credential to disk.
+That is what makes this config publishable, and it is enforced by a test:
+`TestRepoHygiene` scans every tracked file for credential shapes on each run.
+
+Put your keys in `~/.zshrc` so they persist across terminals:
+
+```bash
+echo 'export GROQ_API_KEY=your_key_here' >> ~/.zshrc
+```
+
+If a key ever reaches a chat, a screenshot, or a commit, rotate it rather than
+assessing the blast radius — all of these providers issue free replacements in
+about a minute.
+
 ## Using it
 
 ```bash

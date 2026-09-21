@@ -21,3 +21,10 @@ vault/
 # Model weights, downloaded by `evie doctor --fix`.
 *.onnx
 voices-*.bin
+
+# Secrets never belong here. E.V.I.E. reads keys from the environment only --
+# brains.yaml names the variable (api_key_env: GROQ_API_KEY), never its value,
+# which is what makes the config safe to publish.
+.env
+.env.*
+*.env
