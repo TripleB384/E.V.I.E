@@ -25,6 +25,19 @@ console = Console()
 err = Console(stderr=True, style="bold red")
 
 
+def _is_interactive() -> bool:
+    """Whether this is a real terminal session.
+
+    Its own function because the alternative is unpatchable: a CLI test
+    runner replaces sys.stdin, so a direct sys.stdin.isatty() call can only
+    ever report the runner's pipe.
+    """
+    try:
+        return sys.stdin.isatty()
+    except (AttributeError, ValueError):
+        return False
+
+
 def _fail(message: str, hint: str = "") -> None:
     err.print(f"✗ {escape(message)}")
     if hint:
@@ -55,7 +68,7 @@ def run(debug: bool, brain: str | None) -> None:
     # agent's shell tool, a CI job or a pipe and the key press never arrives --
     # the loop just sits there looking broken. Say so before spending thirty
     # seconds loading Whisper and Kokoro to reach the same silence.
-    if not sys.stdin.isatty():
+    if not _is_interactive():
         _fail(
             "`evie run` needs an interactive terminal.",
             "Open Terminal or iTerm directly, then: "
@@ -74,6 +87,27 @@ def run(debug: bool, brain: str | None) -> None:
         from .loop import VoiceLoop
     except ImportError as exc:
         _fail(f"voice extras missing: {exc}", "uv pip install -e '.[voice]'")
+
+    # pynput only warns on stderr and carries on, so without this E.V.I.E.
+    # announces herself ready and then ignores every key press.
+    from .audio.capture import accessibility_trusted, request_accessibility
+
+    if accessibility_trusted() is False:
+        app = os.environ.get("TERM_PROGRAM", "your terminal")
+        err.print("✗ macOS has not granted this terminal Accessibility access.")
+        console.print(
+            f"  [yellow]The hotkey cannot work without it, so there is no point starting.[/]\n"
+            f"  Asking macOS to show its prompt now — it adds [bold]{app}[/] to the list "
+            f"for you,\n  which is easier than finding the '+' button.\n"
+        )
+        request_accessibility()
+        console.print(
+            "  Then: turn the switch [bold]on[/], [bold]quit the terminal with Cmd-Q[/], "
+            "reopen it, and run `evie run` again.\n"
+            "  [dim]The quit matters: macOS only applies this to a newly launched "
+            "process.[/]"
+        )
+        sys.exit(1)
 
     try:
         asyncio.run(VoiceLoop(assistant, debug=debug).run())
@@ -353,7 +387,7 @@ def doctor(fix: bool) -> None:
     except Exception as exc:
         check("audio devices", False, "", f"{exc}")
 
-    if not sys.stdin.isatty():
+    if not _is_interactive():
         console.print(
             "\n[yellow]Not a terminal session.[/] Checks below are unreliable here: this\n"
             "  shell doesn't read your ~/.zshrc, so exported API keys look unset, and\n"
@@ -362,13 +396,26 @@ def doctor(fix: bool) -> None:
 
     if sys.platform == "darwin":
         console.print("\n[bold]macOS permissions[/]")
-        console.print(
-            "  [yellow]Global hotkeys need Input Monitoring AND Accessibility granted to your\n"
-            "  terminal app — not to Python. This is the single most common reason\n"
-            "  push-to-talk silently does nothing.[/]\n"
-            "  [dim]System Settings > Privacy & Security > Input Monitoring\n"
-            "  System Settings > Privacy & Security > Accessibility[/]"
-        )
+        try:
+            from .audio.capture import accessibility_trusted
+
+            trusted = accessibility_trusted()
+        except Exception:
+            trusted = None
+
+        if trusted is None:
+            console.print(
+                "  [dim]Could not query Accessibility. Grant it to your terminal app "
+                "(not Python) if the hotkey does nothing.[/]"
+            )
+        else:
+            check(
+                "Accessibility (global hotkey)",
+                trusted,
+                "granted to this terminal" if trusted else "",
+                "Run `evie run` — it will ask macOS to add this terminal to the list, "
+                "then turn the switch on, quit with Cmd-Q, and reopen.",
+            )
         check("`say` fallback voice", _shutil.which("say") is not None)
 
     console.print("\n[bold]vault[/]")

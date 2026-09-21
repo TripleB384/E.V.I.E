@@ -300,7 +300,7 @@ class TestInteractiveGuard:
 
         monkeypatch.chdir(tmp_path)
         monkeypatch.setenv("EVIE_HOME", str(tmp_path / "home"))
-        with patch("sys.stdin.isatty", return_value=stdin_isatty):
+        with patch("evie.cli._is_interactive", return_value=stdin_isatty):
             return CliRunner().invoke(main, args)
 
     def test_run_refuses_without_a_tty(self, tmp_path, monkeypatch):
@@ -308,6 +308,27 @@ class TestInteractiveGuard:
         assert result.exit_code != 0
         assert "interactive terminal" in result.output
         assert "Terminal or iTerm" in result.output
+
+    def test_run_refuses_when_accessibility_is_denied(self, tmp_path, monkeypatch):
+        """pynput warns on stderr and carries on, so E.V.I.E. would announce
+        herself ready and then ignore every key press. Refuse instead."""
+        from unittest.mock import patch
+
+        from click.testing import CliRunner
+
+        from evie.cli import main
+
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setenv("EVIE_HOME", str(tmp_path / "home"))
+        with patch("evie.cli._is_interactive", return_value=True), patch(
+            "evie.audio.capture.accessibility_trusted", return_value=False
+        ), patch("evie.audio.capture.request_accessibility", return_value=False) as ask:
+            result = CliRunner().invoke(main, ["run"])
+
+        assert result.exit_code != 0
+        assert "Accessibility" in result.output
+        assert "Cmd-Q" in result.output, "the relaunch step is the part people skip"
+        assert ask.called, "should trigger the system prompt, not just complain"
 
     def test_ask_still_works_without_a_tty(self, tmp_path, monkeypatch):
         # Scripts and agents must keep working -- only `run` needs the guard.
