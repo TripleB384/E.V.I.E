@@ -149,6 +149,13 @@ _AUTH_PROBLEM = re.compile(
     r"unauthori[sz]ed|rejected|denied|forbidden|provide|pass)\b",
     re.IGNORECASE,
 )
+_MODEL_TROUBLE = re.compile(
+    r"\bmodel\b[^.]{0,80}?"
+    r"\b(?:not found|no longer|unavailable|does not exist|doesn'?t exist|"
+    r"deprecated|retired|unsupported|invalid|unknown|decommissioned)\b"
+    r"|\b(?:unknown|invalid|unsupported|no such)\b[^.]{0,20}?\bmodel\b",
+    re.IGNORECASE,
+)
 _QUOTA_TROUBLE = re.compile(
     r"\b(?:quota|rate.?limit|exhausted|too many requests|billing|"
     r"insufficient.{0,20}(?:credit|balance|fund))\b",
@@ -170,6 +177,15 @@ def _from_status(status: int, body: str) -> Exception:
             f"the API key was rejected — check it is the right provider's key, "
             f"has no stray quotes or spaces, and has not expired. "
             f"Provider said: {snippet}"
+        )
+
+    if status == 404 or _MODEL_TROUBLE.search(body):
+        # Per-provider configuration, not a bad request. Google retiring
+        # gemini-2.5-flash says nothing about whether Groq can answer, so
+        # ending the turn here wastes a working fallback chain.
+        return BrainUnavailable(
+            f"this provider will not serve that model — update `model:` for "
+            f"this brain in brains.yaml. Provider said: {snippet}"
         )
 
     return BrainRefused(f"HTTP {status}: {snippet}")

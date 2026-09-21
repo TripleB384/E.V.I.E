@@ -99,7 +99,7 @@ brains:
   gemini_api:
     kind: openai
     base_url: https://generativelanguage.googleapis.com/v1beta/openai
-    model: gemini-2.5-flash
+    model: gemini-3.6-flash      # 2.5-flash was retired for new users
     # Key from aistudio.google.com/apikey. New keys start AQ.Ab (Google moved
     # off the older AIza format in May 2026 and is retiring it); both work.
     api_key_env: GEMINI_API_KEY

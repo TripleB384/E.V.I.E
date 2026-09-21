@@ -352,10 +352,28 @@ class TestErrorClassification:
         exc = self._classify(403, '{"message": "Quota exceeded for this project"}')
         assert isinstance(exc, BrainExhausted)
 
-    def test_a_genuine_bad_request_stays_fatal(self):
-        """A bad model name fails identically everywhere, so trying three more
-        brains just wastes three more round trips."""
+    def test_a_retired_model_is_recoverable(self):
+        """I originally asserted the opposite here, reasoning that a bad model
+        name "fails identically everywhere". It does not: a model id is
+        per-provider configuration. Google retiring gemini-2.5-flash ended a
+        real turn that Groq would have answered."""
+        exc = self._classify(
+            404,
+            '{"error":{"code":404,"message":"models/gemini-2.5-flash is no longer '
+            'available to new users. Please update to models/gemini-3.6-flash"}}',
+        )
+        assert isinstance(exc, BrainUnavailable)
+        assert exc.retryable_elsewhere
+        assert "brains.yaml" in str(exc), "should say where to change it"
+
+    def test_an_unknown_model_name_is_recoverable_too(self):
         exc = self._classify(400, '{"error": {"message": "model not found: gpt-9"}}')
+        assert isinstance(exc, BrainUnavailable)
+
+    def test_a_malformed_request_stays_fatal(self):
+        """Nothing here is provider-specific, so three more round trips would
+        produce three more identical rejections."""
+        exc = self._classify(400, '{"error": {"message": "messages: field required"}}')
         assert isinstance(exc, BrainRefused)
         assert not exc.retryable_elsewhere
 

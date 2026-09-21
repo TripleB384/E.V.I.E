@@ -23,6 +23,14 @@ class Agentic(EchoBrain):
 
 
 @pytest.fixture
+def reg_full():
+    """The shipped roster, so name resolution is tested against real aliases."""
+    from evie.config import PACKAGE_DEFAULTS, load_registry
+
+    return load_registry(PACKAGE_DEFAULTS / "brains.yaml")
+
+
+@pytest.fixture
 def reg():
     return BrainRegistry(
         {"claude": Agentic("claude"), "gemini_cli": EchoBrain("gemini_cli"),
@@ -263,3 +271,62 @@ class TestHowWhisperActuallyHears:
         before = reg.active
         assert route("use the smallest font", reg).action is Action.ANSWER
         assert reg.active == before
+
+
+class TestTranscriptionSplitsWords:
+    """Speech-to-text does not preserve word boundaries.
+
+    "OpenRouter" came back as "open route". Substring matching could not
+    bridge it -- "router" is not inside "open route" -- so the command went to
+    a model, which replied "Switched to OpenRouter" while nothing switched.
+    The user only found out two turns later.
+    """
+
+    import pytest as _pytest
+
+    @_pytest.mark.parametrize(
+        "heard,expected",
+        [
+            ("open route", "openrouter"),
+            ("open router", "openrouter"),
+            ("OpenRouter", "openrouter"),
+            ("gemini a p i", "gemini_api"),
+            ("git hub", "github"),
+        ],
+    )
+    def test_split_and_joined_names_resolve(self, reg_full, heard, expected):
+        assert reg_full.resolve(heard) == expected
+
+    def test_a_split_name_switches_for_real(self, reg_full):
+        decision = route("EV switch to open route.", reg_full)
+        assert decision.action is Action.REPLY, "must not reach a model"
+        assert reg_full.active == "openrouter"
+        assert reg_full.pinned == "openrouter"
+
+    def test_a_near_miss_is_refused_rather_than_guessed(self, reg_full):
+        """"clod" scores 0.89 against "cloud" and 0.60 against "claude", so
+        edit-distance matching would route a mishearing of Claude to Ollama
+        Cloud. Falling through to a model is merely unhelpful; switching to
+        the wrong brain is wrong."""
+        from evie.brains.registry import UnknownBrain
+
+        with self._pytest.raises(UnknownBrain):
+            reg_full.resolve("clod")
+
+
+class TestWhoIsAnswering:
+    import pytest as _pytest
+
+    @_pytest.mark.parametrize(
+        "said",
+        ["which brain did you use to answer that question?",
+         "what brain did you use to answer the weather question?",
+         "which model are you using",
+         "what brain are you on",
+         "who are you running on",
+         "are you still on claude"],
+    )
+    def test_every_phrasing_is_intercepted(self, reg, said):
+        # One of these reached a model, which invented an account of its own
+        # routing. The router knows the answer for free.
+        assert route(said, reg).action is Action.REPLY

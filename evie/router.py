@@ -69,9 +69,13 @@ _USE = re.compile(
     r"(?:\s+brain|\s+model|\s+instead|\s+please)?[.!?]*$",
     re.IGNORECASE,
 )
+# Any way of asking who is answering. The old pattern demanded the phrase
+# "running on|using|on", so "what brain did you use?" reached a model, which
+# then made up an account of its own routing.
 _WHICH = re.compile(
-    r"^(?:who|what|which)\s+(?:brain|model|ai)?\s*(?:are\s+you\s+)?"
-    r"(?:running\s+on|using|on)\b.*$|^which\s+brain\b.*$",
+    r"^(?:who|what|which)\s+(?:brain|model|ai|llm)\b.*$"
+    r"|^(?:who|what)\s+(?:are\s+you\s+)?(?:running\s+on|using)\b.*$"
+    r"|^are\s+you\s+(?:still\s+)?(?:on|using)\b.*$",
     re.IGNORECASE,
 )
 _LIST = re.compile(r"^(?:list|what are)\s+(?:your\s+)?brains?\b.*$", re.IGNORECASE)

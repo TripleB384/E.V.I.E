@@ -14,6 +14,7 @@ until it is gone, then move down the list without the user doing anything.
 from __future__ import annotations
 
 import datetime as _dt
+import re
 from collections import defaultdict
 from dataclasses import dataclass, field
 from typing import AsyncIterator, Iterable
@@ -145,15 +146,47 @@ class BrainRegistry:
     def aliases_for(self, name: str) -> list[str]:
         return sorted(a for a, t in self._aliases.items() if t == name and a != name)
 
+    @staticmethod
+    def _flatten(text: str) -> str:
+        """Reduce a name to letters and digits, so spelling and spacing stop
+        mattering. "Open Router", "open route", "OpenRouter" all collapse to
+        roughly the same thing."""
+        return re.sub(r"[^a-z0-9]", "", text.lower())
+
     def resolve(self, name: str) -> str:
-        """Map any alias to a canonical brain name."""
+        """Map anything a person might say to a canonical brain name.
+
+        Speech-to-text does not preserve word boundaries. "OpenRouter" came
+        back as "open route", and matching by substring could not bridge that
+        -- "router" is not inside "open route". The command then went to a
+        model, which cheerfully replied "Switched to OpenRouter" without
+        anything having switched.
+        """
         key = name.lower().strip()
         if key in self._aliases:
             return self._aliases[key]
-        # Tolerate speech-to-text noise: "switch to grok" for "groq".
-        for alias, target in self._aliases.items():
-            if alias in key or key in alias:
-                return target
+
+        flat = self._flatten(key)
+        if not flat:
+            raise UnknownBrain(f"no brain called {name!r}")
+
+        flattened = {self._flatten(a): t for a, t in self._aliases.items()}
+
+        if flat in flattened:
+            return flattened[flat]
+
+        # A truncated or run-together hearing: "openroute" for "openrouter".
+        prefixes = [a for a in flattened if a.startswith(flat) or flat.startswith(a)]
+        if prefixes:
+            return flattened[min(prefixes, key=len)]
+
+        # Deliberately no edit-distance matching. It looks like the obvious
+        # next step and it picks confidently wrong answers: "clod" scores
+        # 0.89 against "cloud" and 0.60 against "claude", so a mishearing of
+        # Claude would silently route to Ollama Cloud. No cutoff fixes that,
+        # because by edit distance the wrong answer really is closer. An
+        # unresolved name falls through to a model, which is merely unhelpful
+        # rather than quietly wrong.
         raise UnknownBrain(
             f"no brain called {name!r}. Available: {', '.join(self._brains)}"
         )
