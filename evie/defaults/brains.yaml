@@ -100,7 +100,9 @@ brains:
     kind: openai
     base_url: https://generativelanguage.googleapis.com/v1beta/openai
     model: gemini-2.5-flash
-    api_key_env: GEMINI_API_KEY  # free key from aistudio.google.com
+    # Key from aistudio.google.com/apikey. New keys start AQ.Ab (Google moved
+    # off the older AIza format in May 2026 and is retiring it); both work.
+    api_key_env: GEMINI_API_KEY
     daily_limit: 1500
     aliases: [gemini api, flash]
 

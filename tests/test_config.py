@@ -247,7 +247,9 @@ class TestRepoHygiene:
         r"sk-ant-[A-Za-z0-9_-]{20,}",   # Anthropic
         r"sk-[A-Za-z0-9]{32,}",         # OpenAI
         r"ghp_[A-Za-z0-9]{20,}",        # GitHub
-        r"AIza[A-Za-z0-9_-]{30,}",      # Google
+        r"AIza[A-Za-z0-9_-]{30,}",      # Google, legacy "standard" key
+        r"AQ\.Ab[A-Za-z0-9_-]{20,}",    # Google, current AI Studio "auth" key
+        r"sk-or-v?\d?-?[A-Za-z0-9]{32,}",  # OpenRouter
         r"xi-api-key:\s*[A-Za-z0-9]{20,}",  # ElevenLabs
     )
 
@@ -286,6 +288,11 @@ class TestRepoHygiene:
         pattern = re.compile("|".join(self.SECRET_SHAPES))
         assert pattern.search("GROQ_API_KEY=gsk_" + "a1B2c3D4e5F6g7H8i9J0k1L2")
         assert pattern.search("token: ghp_" + "0123456789abcdefghijABCD")
+        # Google moved new AI Studio keys from AIza to AQ.Ab in May 2026, and
+        # is retiring AIza entirely -- a scanner that only knew the old shape
+        # would wave every current Google key straight through.
+        assert pattern.search("GEMINI_API_KEY=AQ.Ab" + "8xK2mQ7pL4nR9tV3wY6zB1")
+        assert pattern.search("OPENROUTER_API_KEY=sk-or-v1-" + "a" * 40)
         # ...and would not fire on the config that names variables.
         assert not pattern.search("api_key_env: GROQ_API_KEY")
         assert not pattern.search("export GROQ_API_KEY=your_key_here")
