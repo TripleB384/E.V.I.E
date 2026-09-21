@@ -275,25 +275,95 @@ def brains_list() -> None:
     console.print("[dim]config: " + " + ".join(str(p) for p in layers) + "[/]")
 
 
-@brains.command("use")
-@click.argument("name")
-def brains_use(name: str) -> None:
-    """Set the default brain (writes it to brains.yaml)."""
+def _edit_overrides(change) -> Path:
+    """Apply `change` to your own override file, creating it if needed.
+
+    Always your file, never the shipped defaults. Writing to whichever config
+    happened to be found first would edit evie/defaults/brains.yaml inside the
+    repo -- turning up in `git status` and getting clobbered by the next pull.
+    """
     import yaml
 
-    from .config import find_config, load_registry
+    from .config import user_dir
+
+    path = user_dir() / "brains.yaml"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    data = (yaml.safe_load(path.read_text()) if path.is_file() else None) or {}
+    change(data)
+    path.write_text(yaml.safe_dump(data, sort_keys=False))
+    return path
+
+
+def _resolve_or_fail(name: str) -> str:
+    from .config import load_registry
 
     try:
-        registry = load_registry()
-        target = registry.resolve(name)
+        return load_registry().resolve(name)
     except Exception as exc:
         _fail(str(exc), "Run `evie brains list` to see the options.")
 
-    path = find_config("brains.yaml")
-    data = yaml.safe_load(path.read_text())
-    data["default"] = target
-    path.write_text(yaml.safe_dump(data, sort_keys=False))
-    console.print(f"[green]✓[/] default brain is now [bold]{target}[/] ({path})")
+
+@brains.command("use")
+@click.argument("name")
+def brains_use(name: str) -> None:
+    """Set the default brain."""
+    target = _resolve_or_fail(name)
+
+    def change(data):
+        data["default"] = target
+
+    path = _edit_overrides(change)
+    console.print(f"[green]✓[/] default brain is now [bold]{target}[/]")
+    console.print(f"  [dim]{path}[/]")
+
+
+@brains.command("disable")
+@click.argument("name")
+def brains_disable(name: str) -> None:
+    """Hide a brain you do not want, without editing YAML by hand."""
+    target = _resolve_or_fail(name)
+
+    def change(data):
+        data.setdefault("brains", {}).setdefault(target, {})["enabled"] = False
+
+    path = _edit_overrides(change)
+    console.print(f"[green]✓[/] [bold]{target}[/] is off")
+    console.print(f"  [dim]{path} — `evie brains enable {target}` to undo[/]")
+
+
+@brains.command("enable")
+@click.argument("name")
+def brains_enable(name: str) -> None:
+    """Turn a brain back on."""
+    import yaml
+
+    from .config import PACKAGE_DEFAULTS, user_dir
+
+    # The brain may be off precisely because it is absent from the merged
+    # registry, so resolve against the shipped roster rather than the live one.
+    shipped = yaml.safe_load((PACKAGE_DEFAULTS / "brains.yaml").read_text()) or {}
+    known = set(shipped.get("brains") or {})
+
+    # The override file is optional -- `evie init` writes an empty one, and a
+    # user who deletes it is in a perfectly good state. Reading it blindly
+    # crashed with FileNotFoundError for exactly that case.
+    override = user_dir() / "brains.yaml"
+    if override.is_file():
+        local = yaml.safe_load(override.read_text()) or {}
+        known |= set(local.get("brains") or {})
+
+    if name not in known:
+        _fail(
+            f"no brain called {name!r}. Known: {', '.join(sorted(known))}",
+            "Run `evie brains list` to see what is configured.",
+        )
+
+    def change(data):
+        data.setdefault("brains", {}).setdefault(name, {})["enabled"] = True
+
+    path = _edit_overrides(change)
+    console.print(f"[green]✓[/] [bold]{name}[/] is on")
+    console.print(f"  [dim]{path}[/]")
 
 
 # -- memory --------------------------------------------------------------

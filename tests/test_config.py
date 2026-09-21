@@ -473,3 +473,82 @@ class TestInitWritesStubs:
         reg = load_registry()
         assert reg.active == "groq", "should track the shipped default"
         assert "openrouter" in reg.names()
+
+
+class TestOverrideWrites:
+    """Commands that change config must write to the user's file.
+
+    With no ~/.evie/brains.yaml, the old code resolved to whichever config it
+    found first and wrote there -- which is evie/defaults/brains.yaml inside
+    the repo. That shows up in `git status` and is overwritten by the next
+    pull.
+    """
+
+    def _run(self, args, tmp_path, monkeypatch):
+        from click.testing import CliRunner
+
+        from evie.cli import main
+
+        monkeypatch.setenv("EVIE_HOME", str(tmp_path / ".evie"))
+        monkeypatch.chdir(tmp_path)
+        return CliRunner().invoke(main, args)
+
+    def _shipped(self):
+        from evie.config import PACKAGE_DEFAULTS
+
+        return (PACKAGE_DEFAULTS / "brains.yaml").read_text()
+
+    def test_use_never_touches_the_shipped_config(self, tmp_path, monkeypatch):
+        before = self._shipped()
+        result = self._run(["brains", "use", "claude"], tmp_path, monkeypatch)
+        assert result.exit_code == 0, result.output
+        assert self._shipped() == before, "wrote into the package defaults"
+
+    def test_use_creates_the_override_file(self, tmp_path, monkeypatch):
+        import yaml
+
+        self._run(["brains", "use", "claude"], tmp_path, monkeypatch)
+        written = yaml.safe_load((tmp_path / ".evie" / "brains.yaml").read_text())
+        assert written["default"] == "claude"
+
+    def test_disable_then_enable_round_trips(self, tmp_path, monkeypatch):
+        from evie.config import load_registry
+
+        assert self._run(
+            ["brains", "disable", "gemini_cli"], tmp_path, monkeypatch
+        ).exit_code == 0
+        monkeypatch.setenv("EVIE_HOME", str(tmp_path / ".evie"))
+        monkeypatch.chdir(tmp_path)
+        assert "gemini_cli" not in load_registry().names()
+
+        assert self._run(
+            ["brains", "enable", "gemini_cli"], tmp_path, monkeypatch
+        ).exit_code == 0
+        assert "gemini_cli" in load_registry().names()
+
+    def test_enable_works_on_a_brain_the_registry_cannot_see(
+        self, tmp_path, monkeypatch
+    ):
+        """A disabled brain is absent from the merged registry, so resolving
+        against the live one would make the disable irreversible."""
+        self._run(["brains", "disable", "ollama"], tmp_path, monkeypatch)
+        result = self._run(["brains", "enable", "ollama"], tmp_path, monkeypatch)
+        assert result.exit_code == 0, result.output
+
+    def test_enable_rejects_an_unknown_name_with_the_list(self, tmp_path, monkeypatch):
+        result = self._run(["brains", "enable", "nonsense"], tmp_path, monkeypatch)
+        assert result.exit_code != 0
+        # The error goes to stderr, which is where errors belong; Click keeps
+        # the streams separate, so check both.
+        printed = result.output + (result.stderr or "")
+        assert "groq" in printed, "should name what is actually available"
+
+    def test_disable_survives_a_later_use(self, tmp_path, monkeypatch):
+        """Two edits to the same file must not clobber each other."""
+        import yaml
+
+        self._run(["brains", "disable", "gemini_cli"], tmp_path, monkeypatch)
+        self._run(["brains", "use", "claude"], tmp_path, monkeypatch)
+        written = yaml.safe_load((tmp_path / ".evie" / "brains.yaml").read_text())
+        assert written["default"] == "claude"
+        assert written["brains"]["gemini_cli"]["enabled"] is False
