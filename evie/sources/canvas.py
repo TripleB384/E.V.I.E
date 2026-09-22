@@ -37,6 +37,36 @@ class CanvasError(Exception):
     """Something went wrong talking to Canvas, said in a way you can act on."""
 
 
+def missing_token_advice(var: str = "CANVAS_API_TOKEN") -> str:
+    """Why there is no token, which is two different problems.
+
+    A token written to a shell rc file does not reach a shell that was
+    already running, so "I just saved it and it says it is not set" is the
+    expected outcome of checking in the same terminal -- and needs the
+    opposite advice from "you never set one".
+
+    Prints no `export` line in either case. This message is read at exactly
+    the moment someone is stuck and willing to paste anything, which is how
+    two credentials have already leaked from this project.
+    """
+    from ..secrets import is_stored, shell_rc
+
+    rc = shell_rc()
+    if is_stored(var, rc):
+        return (
+            f"${var} is saved in {rc}, but this shell started before it was "
+            f"written, so it has not been picked up.\n"
+            f"  Run:  source {rc}\n"
+            f"  ...or just open a new terminal."
+        )
+    return (
+        f"no Canvas token yet. Run:\n"
+        f"    evie canvas setup yourdistrict.instructure.com\n"
+        f"  It will prompt you for one — nothing is echoed and nothing "
+        f"reaches your shell history."
+    )
+
+
 def clean_base_url(raw: str) -> str:
     """Scheme and host, whatever someone pastes.
 
@@ -207,11 +237,7 @@ class Canvas:
                 "    evie canvas setup yourdistrict.instructure.com"
             )
         if not token:
-            raise CanvasError(
-                "no Canvas token. Generate one in a browser at "
-                "Account -> Settings -> '+ New Access Token', then:\n"
-                "  export CANVAS_API_TOKEN='...'   (in ~/.zshrc, not in this repo)"
-            )
+            raise CanvasError(missing_token_advice())
         self.base_url = clean_base_url(base_url)
         self._token = token
 

@@ -248,11 +248,31 @@ class TestErrors:
         with pytest.raises(CanvasError, match="evie canvas setup"):
             Canvas("", "token")
 
-    def test_no_token_names_the_env_var_and_where_to_get_one(self):
+    def test_no_token_points_at_setup_not_an_export_line(self, monkeypatch):
+        """This error is read at the moment someone is stuck and willing to
+        paste anything, so it must not hand them an `export KEY=value` to
+        run. That is how two credentials have already leaked here."""
+        monkeypatch.setenv("SHELL", "/bin/zsh")
+        monkeypatch.setattr("evie.secrets.is_stored", lambda var, rc: False)
         with pytest.raises(CanvasError) as exc:
             Canvas("https://x.instructure.com", "")
-        assert "CANVAS_API_TOKEN" in str(exc.value)
-        assert "not in this repo" in str(exc.value)
+        assert "evie canvas setup" in str(exc.value)
+        assert "export " not in str(exc.value)
+
+    def test_a_token_saved_but_not_loaded_says_source_not_setup(self, monkeypatch):
+        """Exactly what happened on the Mac: saved to ~/.zshrc, then checked
+        in the same terminal, which started before the file was written.
+        Telling someone to set it up again would be wrong advice."""
+        monkeypatch.setattr("evie.secrets.is_stored", lambda var, rc: True)
+        monkeypatch.setattr("evie.secrets.shell_rc",
+                            lambda: __import__("pathlib").Path("/home/x/.zshrc"))
+        with pytest.raises(CanvasError) as exc:
+            Canvas("https://x.instructure.com", "")
+        message = str(exc.value)
+        assert "source /home/x/.zshrc" in message
+        assert "new terminal" in message
+        assert "evie canvas setup" not in message, "it is already set up"
+        assert "export " not in message
 
     def test_a_bare_host_gets_a_scheme(self):
         assert Canvas("broward.instructure.com", "t").base_url.startswith("https://")
@@ -440,3 +460,36 @@ class TestTheUrlSomeoneActuallyHas:
             Canvas("", "token")
         assert "evie canvas setup" in str(exc.value)
         assert "base_url:" not in str(exc.value)
+
+
+class TestNoCanvasErrorTeachesTheUnsafePattern:
+    """The check that would have caught the one that survived.
+
+    `export KEY=...` was removed from the base_url branch of the constructor
+    and left in the token branch six lines below it, so the message shown at
+    the exact moment someone is stuck was still the one instruction
+    guaranteed to put a secret on a command line.
+    """
+
+    import pytest as _pytest
+
+    @_pytest.mark.parametrize("make", [
+        lambda: Canvas("", "token"),
+        lambda: Canvas("https://x.instructure.com", ""),
+    ])
+    def test_the_constructor_errors_are_clean(self, make, monkeypatch):
+        monkeypatch.setattr("evie.secrets.is_stored", lambda var, rc: False)
+        with pytest.raises(CanvasError) as exc:
+            make()
+        assert "export " not in str(exc.value)
+
+    @_pytest.mark.parametrize("status,body", [
+        (401, '{"errors":[{"message":"Invalid access token."}]}'),
+        (403, ""),
+        (404, ""),
+        (500, "boom"),
+    ])
+    def test_the_http_errors_are_clean_too(self, status, body):
+        from evie.sources.canvas import _explain
+
+        assert "export " not in str(_explain(status, body, "https://x"))

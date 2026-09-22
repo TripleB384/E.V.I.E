@@ -104,6 +104,19 @@ def store(var: str, value: str, rc: Path) -> Path:
     return rc
 
 
+def is_stored(var: str, rc: Path | None) -> bool:
+    """Whether the managed block already exports this variable.
+
+    Lets a caller tell "never set up" from "set up, but this shell started
+    before it was written" -- two situations that need opposite advice and
+    look identical from `os.environ` alone. Reads only the variable name; the
+    value is never parsed out.
+    """
+    if rc is None or not rc.is_file():
+        return False
+    return any(_sets(line, var) for line in rc.read_text().splitlines())
+
+
 def _sets(line: str, var: str) -> bool:
     stripped = line.strip()
     return (

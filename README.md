@@ -96,7 +96,7 @@ Takes a minute or two; onnxruntime and the Whisper libraries are large.
 pytest
 ```
 
-419 tests pass, with no hardware and no credentials.
+426 tests pass, with no hardware and no credentials.
 
 **5. Set up and go:**
 
@@ -236,7 +236,14 @@ evie canvas setup yourdistrict.instructure.com
 `setup` then prompts for the token: generate one in a browser at Account →
 Settings → "+ New Access Token", and paste it at the prompt. Nothing echoes,
 nothing reaches your shell history, and it is written to your shell rc with
-mode 600. Canvas shows a token exactly once and it is password-equivalent, so
+mode 600. It then makes a real call straight away and prints your name and
+course count, so a mistyped token is caught while it is still on your
+clipboard.
+
+That check runs in the current process only. A shell rc file reaches shells
+started *after* it is written, so open a new terminal (or `source ~/.zshrc`)
+before running `evie` again — if you forget, the error says exactly that
+rather than telling you to set it up again. Canvas shows a token exactly once and it is password-equivalent, so
 it is never accepted as a command-line argument — there is deliberately no
 `--token` option, and a test enforces that. Some school districts disable token generation entirely; if the
 "Approved Integrations" section is missing, that is the answer.

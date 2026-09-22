@@ -500,7 +500,7 @@ def brains_test(only: str | None, one: str | None, skip: tuple[str, ...], deep: 
     console.print(f"[green]{summary}[/]")
 
 
-def _capture_secret(var: str, label: str) -> None:
+def _capture_secret(var: str, label: str) -> bool:
     """Take a credential from a person without it touching a command line.
 
     `getpass` rather than an argument or an echoed prompt: a secret in argv is
@@ -518,12 +518,9 @@ def _capture_secret(var: str, label: str) -> None:
         f"\n[yellow]${var} is not set.[/] Generate one in a browser at "
         f"[bold]Account → Settings → '+ New Access Token'[/]."
     )
-    if rc is None:
+    if rc is None or not _is_interactive():
         console.print("  " + escape(manual_instructions(var, rc)))
-        return
-    if not _is_interactive():
-        console.print("  " + escape(manual_instructions(var, rc)))
-        return
+        return False
 
     console.print(
         f"  [dim]Paste it at the prompt — nothing will appear as you type, and "
@@ -533,7 +530,7 @@ def _capture_secret(var: str, label: str) -> None:
         value = getpass(f"  {label}: ")
     except (EOFError, KeyboardInterrupt):
         console.print("\n  [dim]Nothing saved.[/]")
-        return
+        return False
 
     if reason := why_not(value):
         # The reason, never the value -- an error message is exactly when
@@ -543,13 +540,15 @@ def _capture_secret(var: str, label: str) -> None:
 
     if not click.confirm(f"  Save it to {rc}?", default=True):
         console.print("  " + escape(manual_instructions(var, rc)))
-        return
+        return False
 
     store(var, value, rc)
-    console.print(
-        f"  [green]✓[/] {len(value)} characters written to [dim]{rc}[/]\n"
-        f"  [dim]Open a new terminal, then: evie canvas status[/]"
-    )
+    # For this process only, so the caller can verify the token immediately
+    # rather than sending someone to another terminal to find out whether it
+    # is even valid. Does not and cannot affect the parent shell.
+    os.environ[var] = value
+    console.print(f"  [green]✓[/] {len(value)} characters written to [dim]{rc}[/]")
+    return True
 
 
 # -- canvas --------------------------------------------------------------
@@ -587,6 +586,7 @@ def canvas_setup(url: str) -> None:
     alternative is hand-editing YAML, and a config block in a chat window
     looks exactly like something you paste into a shell.
     """
+    from .secrets import shell_rc
     from .sources.canvas import clean_base_url
 
     try:
@@ -604,10 +604,20 @@ def canvas_setup(url: str) -> None:
     from .config import Settings
 
     var = Settings.load().canvas.token_env
-    if os.environ.get(var):
-        console.print("\n  [dim]Now: evie canvas status[/]")
+    if not os.environ.get(var) and not _capture_secret(var, "Canvas token"):
         return
-    _capture_secret(var, "Canvas token")
+
+    # Prove it works now, while the token is still on the clipboard. Sending
+    # someone to a new terminal to discover a typo is a context switch for
+    # nothing, and "it saved, then said it was not set" reads as a failure
+    # even when the save worked.
+    console.print()
+    ctx = click.get_current_context()
+    ctx.invoke(canvas_status)
+    console.print(
+        f"\n  [dim]That was this shell only. Open a new terminal (or "
+        f"`source {shell_rc()}`) before running evie again.[/]"
+    )
 
 
 @canvas.command("status")
