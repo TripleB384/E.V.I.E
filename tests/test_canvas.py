@@ -493,3 +493,35 @@ class TestNoCanvasErrorTeachesTheUnsafePattern:
         from evie.sources.canvas import _explain
 
         assert "export " not in str(_explain(status, body, "https://x"))
+
+
+class TestWrittenDatesDoNotRot:
+    """`when()` is computed when it is called, so a file synced on Monday
+    still claims "tomorrow" on Friday. Spoken aloud that is right; written
+    down it is a lie that gets worse every day."""
+
+    def test_the_file_carries_an_absolute_date(self):
+        due = _dt.datetime.now(UTC) + _dt.timedelta(days=1)
+        body = render([Deadline("AI301", "Lab 4", due)], title="Upcoming")
+        assert "tomorrow" not in body
+        assert f"{due.astimezone():%-d %b}" in body
+
+    def test_speech_still_gets_the_relative_form(self):
+        """Absolute dates read aloud are worse, not better: "Thursday" beats
+        "the twenty-fifth of September"."""
+        soon = Deadline("c", "t", _dt.datetime.now(UTC) + _dt.timedelta(days=1))
+        assert soon.when().startswith("tomorrow")
+
+    def test_a_file_read_a_week_later_is_still_true(self, tmp_path):
+        from evie.memory import Vault
+
+        due = _dt.datetime.now(UTC) + _dt.timedelta(days=2)
+        vault = Vault(tmp_path / "v").ensure("test")
+        write(vault, [Deadline("AI301", "Lab 4", due)])
+        body = (vault.root / "classes" / "upcoming.md").read_text()
+        # Nothing in the row depends on when it is read.
+        for rots in ("today", "tomorrow", "yesterday", "days ago"):
+            assert rots not in body.split("Synced from Canvas")[-1].split("\n", 1)[1]
+
+    def test_no_due_date_still_says_so(self):
+        assert Deadline("c", "t", None).on() == "no due date"

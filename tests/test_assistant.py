@@ -218,3 +218,83 @@ class TestSheKnowsWhichBrainSheIs:
         a = Assistant(reg, Settings(vault=tmp_path / "v"), None)
         await a.ask("hello")
         assert "the brain named old — old." in a.ctx.system
+
+
+class TestSheCanSeeTheVault:
+    """Sixteen real Canvas deadlines sat in the vault and "what's due this
+    week" still answered "I'm not sure what's on your calendar yet".
+
+    Routing was right — groq answered in under a second, exactly as designed.
+    Nothing had ever read the file back, so it had nothing to answer from.
+    That made the whole vault-instead-of-MCP decision worthless in practice
+    while looking correct in the logs.
+    """
+
+    def _assistant(self, tmp_path, **brains):
+        vault = Vault(tmp_path / "v").ensure("Isaac")
+        (vault.root / "EVIE.md").write_text("You are E.V.I.E.")
+        classes = vault.root / "classes"
+        classes.mkdir(parents=True, exist_ok=True)
+        (classes / "upcoming.md").write_text(
+            "- [ ] **Thu 25 Sep, 11:59 pm** — Directed Writing draft (AICE ENG LANG)\n"
+        )
+        reg = BrainRegistry(
+            brains or {"groq": FakeBrain("groq", agentic=False)},
+            default=next(iter(brains or {"groq": None})),
+        )
+        return Assistant(reg, Settings(vault=vault.root), vault)
+
+    async def test_a_toolless_brain_is_handed_the_deadlines(self, tmp_path):
+        a = self._assistant(tmp_path)
+        await a.ask("what's due this week")
+        assert "Directed Writing draft" in a.ctx.system
+
+    async def test_it_knows_what_day_it_is(self, tmp_path):
+        """"This week" is unanswerable without a clock, and a model has none."""
+        a = self._assistant(tmp_path)
+        await a.ask("what's due this week")
+        assert "Today is" in a.ctx.system
+
+    async def test_an_agentic_brain_gets_it_too(self, tmp_path):
+        """It could open the file itself, but that is a round trip to learn
+        something that fits in a few hundred characters, and claude already
+        costs 5-11s a call."""
+        a = self._assistant(tmp_path, claude=FakeBrain("claude", agentic=True))
+        await a.ask("what's due this week")
+        assert "Directed Writing draft" in a.ctx.system
+
+    async def test_the_two_are_told_different_things_about_it(self, tmp_path):
+        toolless = self._assistant(tmp_path)
+        await toolless.ask("hello")
+        assert "everything you have" in toolless.ctx.system
+
+        agentic = self._assistant(tmp_path, claude=FakeBrain("claude", agentic=True))
+        await agentic.ask("hello")
+        assert "working directory" in agentic.ctx.system
+
+    async def test_no_vault_is_not_a_crash(self, tmp_path):
+        reg = BrainRegistry({"groq": FakeBrain("groq")}, default="groq")
+        a = Assistant(reg, Settings(vault=tmp_path / "nothing"), None)
+        reply = await a.ask("hello")
+        assert reply.text, "she should still answer"
+        assert "What you know right now" not in a.ctx.system
+
+    async def test_it_refreshes_between_turns(self, tmp_path):
+        """A sync that happens mid-conversation has to be visible on the next
+        turn, not after a restart."""
+        a = self._assistant(tmp_path)
+        await a.ask("hello")
+        assert "Lab 4 writeup" not in a.ctx.system
+
+        (a.vault.root / "classes" / "upcoming.md").write_text(
+            "- [ ] **Fri 26 Sep, 9:00 am** — Lab 4 writeup (AI301)\n"
+        )
+        await a.ask("hello again")
+        assert "Lab 4 writeup" in a.ctx.system
+
+    async def test_it_is_told_not_to_add_notes_to_itself(self, tmp_path):
+        """One reply ended "(Note: user asked about weekly due items.)" —
+        bookkeeping read aloud is noise."""
+        a = self._assistant(tmp_path)
+        await a.ask("hello")
+        assert "notes-to-self" in a.ctx.system

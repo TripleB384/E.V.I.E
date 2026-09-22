@@ -96,7 +96,7 @@ Takes a minute or two; onnxruntime and the Whisper libraries are large.
 pytest
 ```
 
-426 tests pass, with no hardware and no credentials.
+446 tests pass, with no hardware and no credentials.
 
 **5. Set up and go:**
 
@@ -251,6 +251,14 @@ it is never accepted as a command-line argument — there is deliberately no
 Sync writes `classes/upcoming.md` and `classes/<course>/deadlines.md`. Only
 the block between the `<!-- evie:canvas -->` markers is replaced, so notes you
 add to those files by hand survive.
+
+Those deadlines, today's date and the last few days of log are then injected
+into **every** brain's context each turn, capped so they can't inflate the
+cost of saying hello. That is what lets the free brain answer *"what's due
+this week"* in under a second without a Canvas call or a Claude Code session.
+Dates in the files are absolute, so a file read a week after syncing is still
+true — the spoken answer computes "tomorrow" when you ask, not when you
+synced.
 
 **This is not an MCP server, deliberately.** MCP tools only reach agentic
 brains, so every "what's due Thursday" would boot a Claude Code session —

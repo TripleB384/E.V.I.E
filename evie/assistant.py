@@ -55,7 +55,10 @@ class Assistant:
         "\n\nFor this reply you have no file access: you cannot read or write "
         "the vault. Answer from what you have been given. Never describe "
         "saving, noting or filing anything — if something is worth keeping, "
-        "say so in one short clause and let it be written for you."
+        "say so in one short clause and let it be written for you. No "
+        "notes-to-self, no restating the question back, no parenthetical "
+        "commentary about what was asked: the reply is spoken out loud, and "
+        "bookkeeping read aloud is noise."
     )
 
     # A model asked what it is answers from its training data, which describes
@@ -91,6 +94,22 @@ class Assistant:
             )
         return "No brain is pinned; this one was chosen for this request."
 
+    # The vault was write-only until this existed. Canvas sync wrote sixteen
+    # real deadlines into classes/upcoming.md, and "what's due this week"
+    # still got "I'm not sure what's on your calendar yet" -- because nothing
+    # ever read the file back. Routing was right, groq answered in under a
+    # second; it just had nothing to answer from.
+    _BRIEFING = "\n\n# What you know right now\n\n{block}\n\n{caveat}"
+    _CAN_READ_MORE = (
+        "That is a summary. The vault is your working directory, so open "
+        "anything in it when you need more than this."
+    )
+    _THIS_IS_ALL = (
+        "That is everything you have. If the answer is not above, say so "
+        "rather than guessing — and say when it was last synced if that is "
+        "why."
+    )
+
     def _identity(self, brain: str | None = None) -> str:
         if self.vault and self.vault.exists and (found := self.vault.identity()):
             base = found
@@ -98,12 +117,25 @@ class Assistant:
             base = load_identity(self.settings)
         if brain is None:
             return base
+
+        agentic = self.registry.get(brain).agentic
+
+        # Injected for every brain, not just toolless ones: a CLI brain could
+        # read these files itself, but that is a round trip to learn something
+        # that fits in a few hundred characters, and `claude` already costs
+        # 5-11s a call.
+        if self.vault and self.vault.exists and (block := self.vault.briefing()):
+            base += self._BRIEFING.format(
+                block=block,
+                caveat=self._CAN_READ_MORE if agentic else self._THIS_IS_ALL,
+            )
+
         base += self._WHOAMI.format(
             name=brain,
             what=self.registry.describe(brain),
             routing=self._routing_note(brain),
         )
-        return base if self.registry.get(brain).agentic else base + self._NO_HANDS
+        return base if agentic else base + self._NO_HANDS
 
     # -- one turn --------------------------------------------------------
 

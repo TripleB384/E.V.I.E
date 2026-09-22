@@ -113,6 +113,22 @@ class Deadline:
             return False
         return self.due < _dt.datetime.now(_dt.timezone.utc)
 
+    def on(self) -> str:
+        """The date itself, for anything written to a file.
+
+        `when()` is computed at the moment it is called, so a file synced on
+        Monday still claims "tomorrow" on Friday. Spoken aloud that is right;
+        written down it rots. The vault gets this instead, and the briefing
+        carries today's date so a model can work out "tomorrow" at the moment
+        it is asked rather than the moment it was synced.
+        """
+        if self.due is None:
+            return "no due date"
+        local = self.due.astimezone()
+        return f"{local:%a %-d %b}, {local:%-I:%M %p}".replace("AM", "am").replace(
+            "PM", "pm"
+        )
+
     def when(self) -> str:
         """How a person would say it, not an ISO timestamp."""
         if self.due is None:
@@ -380,7 +396,7 @@ def render(deadlines: list[Deadline], *, title: str) -> str:
 
 def _row(d: Deadline) -> str:
     box = "x" if d.submitted else " "
-    bits = [f"- [{box}] **{d.when()}** — {d.title}"]
+    bits = [f"- [{box}] **{d.on()}** — {d.title}"]
     if d.course:
         bits.append(f" ({d.course})")
     if d.points:
