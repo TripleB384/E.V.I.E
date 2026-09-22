@@ -126,6 +126,21 @@ class EarSettings:
 
 
 @dataclass
+class CanvasSettings:
+    """Where Canvas is, and which variable holds the key to it.
+
+    The URL is not a secret and lives in config. The token is, and lives only
+    in the environment -- the same split that makes brains.yaml safe to commit
+    to a public repo.
+    """
+
+    base_url: str = ""
+    token_env: str = "CANVAS_API_TOKEN"
+    days_back: int = 7
+    days_ahead: int = 60
+
+
+@dataclass
 class Settings:
     hotkey: str = "alt_r"
     wake_word: str = ""  # phase 5; empty means push-to-talk only
@@ -133,6 +148,7 @@ class Settings:
     identity_file: str = "EVIE.md"
     voice: VoiceSettings = field(default_factory=VoiceSettings)
     ears: EarSettings = field(default_factory=EarSettings)
+    canvas: CanvasSettings = field(default_factory=CanvasSettings)
     transcript_turns: int = 12
 
     @classmethod
@@ -156,6 +172,7 @@ class Settings:
             transcript_turns=int(raw.get("transcript_turns", cls.transcript_turns)),
             voice=VoiceSettings(**(raw.get("voice") or {})),
             ears=EarSettings(**(raw.get("ears") or {})),
+            canvas=CanvasSettings(**(raw.get("canvas") or {})),
         )
 
 

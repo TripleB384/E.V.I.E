@@ -25,3 +25,18 @@ ears:
   model: small.en       # tiny.en is faster; small.en is much better at names
   compute_type: int8
   language: en
+
+# Canvas LMS. Deadlines are synced into the vault as markdown by
+# `evie canvas sync`, so the fast free brain can answer "what's due Thursday"
+# without booting a Claude Code session to do it.
+#
+# base_url is your district's Canvas host and nothing more -- no /login, no
+# course path. The token is NOT here: generate one in a browser at
+# Account -> Settings -> "+ New Access Token" and put it in your shell:
+#     export CANVAS_API_TOKEN='...'
+# A Canvas token is password-equivalent and is shown exactly once.
+canvas:
+  base_url: ""                    # e.g. https://yourdistrict.instructure.com
+  token_env: CANVAS_API_TOKEN
+  days_back: 7                    # keep recently-missed work visible
+  days_ahead: 60

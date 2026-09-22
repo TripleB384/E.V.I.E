@@ -251,6 +251,12 @@ class TestRepoHygiene:
         r"AQ\.Ab[A-Za-z0-9_-]{20,}",    # Google, current AI Studio "auth" key
         r"sk-or-v?\d?-?[A-Za-z0-9]{32,}",  # OpenRouter
         r"xi-api-key:\s*[A-Za-z0-9]{20,}",  # ElevenLabs
+        # Canvas: "<user id>~<40-odd chars>". Password-equivalent, shown once.
+        r"\b\d{3,6}~[A-Za-z0-9]{40,}",
+        # A Canvas calendar feed URL is unauthenticated: whoever holds it
+        # reads the whole school schedule. That makes it a credential even
+        # though it does not look like one.
+        r"instructure\.com/feeds/calendars/[A-Za-z0-9_.-]{20,}",
     )
 
     def test_no_tracked_file_contains_a_credential(self):
@@ -293,9 +299,18 @@ class TestRepoHygiene:
         # would wave every current Google key straight through.
         assert pattern.search("GEMINI_API_KEY=AQ.Ab" + "8xK2mQ7pL4nR9tV3wY6zB1")
         assert pattern.search("OPENROUTER_API_KEY=sk-or-v1-" + "a" * 40)
+        # Canvas hands out "<user id>~<long string>" and shows it exactly
+        # once, so a leaked one is both unrecoverable and unnoticed.
+        assert pattern.search("CANVAS_API_TOKEN=7391~" + "aB3" * 20)
+        # An unauthenticated feed URL is a credential in everything but name.
+        assert pattern.search(
+            "https://x.instructure.com/feeds/calendars/user_" + "q7Z" * 12 + ".ics"
+        )
         # ...and would not fire on the config that names variables.
         assert not pattern.search("api_key_env: GROQ_API_KEY")
         assert not pattern.search("export GROQ_API_KEY=your_key_here")
+        assert not pattern.search("token_env: CANVAS_API_TOKEN")
+        assert not pattern.search("base_url: https://yourdistrict.instructure.com")
 
     def test_env_files_are_ignored(self):
         from pathlib import Path

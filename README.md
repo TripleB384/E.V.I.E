@@ -96,7 +96,7 @@ Takes a minute or two; onnxruntime and the Whisper libraries are large.
 pytest
 ```
 
-113 tests pass, with no hardware and no credentials.
+370 tests pass, with no hardware and no credentials.
 
 **5. Set up and go:**
 
@@ -203,6 +203,41 @@ layer to go stale.
   daily/2026-09-20.md  rolling log
   classes/  business/  people/  projects/
 ```
+
+## Canvas
+
+```bash
+evie canvas status   # check the URL and token, write nothing
+evie canvas sync     # deadlines into the vault as markdown
+```
+
+Point it at your school:
+
+```yaml
+# ~/.evie/config.yaml
+canvas:
+  base_url: https://yourdistrict.instructure.com
+```
+
+The token is **not** in config. Generate one in a browser — Account →
+Settings → "+ New Access Token" — and put it in your shell as
+`CANVAS_API_TOKEN`. Canvas shows it exactly once and it is password-
+equivalent, so treat it like any other key here: environment only, never in
+the repo. Some school districts disable token generation entirely; if the
+"Approved Integrations" section is missing, that is the answer.
+
+Sync writes `classes/upcoming.md` and `classes/<course>/deadlines.md`. Only
+the block between the `<!-- evie:canvas -->` markers is replaced, so notes you
+add to those files by hand survive.
+
+**This is not an MCP server, deliberately.** MCP tools only reach agentic
+brains, so every "what's due Thursday" would boot a Claude Code session —
+5–11s and real plan allowance — to answer something the free brain does in
+0.3s. Syncing into the vault means the fast brain can answer it, it works
+offline, and it survives a Canvas outage.
+
+If a sync writes nothing, `evie canvas sync --shape` prints what Canvas
+actually sent.
 
 ## The stack
 

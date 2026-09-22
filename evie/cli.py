@@ -500,6 +500,106 @@ def brains_test(only: str | None, one: str | None, skip: tuple[str, ...], deep: 
     console.print(f"[green]{summary}[/]")
 
 
+# -- canvas --------------------------------------------------------------
+
+
+@main.group(invoke_without_command=True)
+@click.pass_context
+def canvas(ctx: click.Context) -> None:
+    """Pull Canvas deadlines into the vault."""
+    if ctx.invoked_subcommand is None:
+        ctx.invoke(canvas_status)
+
+
+def _canvas():
+    """Build a client, or fail with the specific thing that is missing."""
+    from .config import Settings
+    from .sources import Canvas, CanvasError
+
+    settings = Settings.load()
+    try:
+        return Canvas.from_settings(settings), settings
+    except CanvasError as exc:
+        _fail(str(exc))
+
+
+@canvas.command("status")
+def canvas_status() -> None:
+    """Check the URL and token without writing anything."""
+    from .sources import CanvasError
+
+    client, settings = _canvas()
+    console.print(f"[dim]{client.base_url}[/]")
+    try:
+        who = asyncio.run(client.whoami())
+        courses = asyncio.run(client.courses())
+    except CanvasError as exc:
+        _fail(str(exc))
+    console.print(f"[green]✓[/] signed in as [bold]{escape(who)}[/]")
+    console.print(f"[green]✓[/] {len(courses)} active courses")
+    for name in list(courses.values())[:15]:
+        console.print(f"    [dim]{escape(name)}[/]")
+
+
+@canvas.command("sync")
+@click.option("--days", default=None, type=int, help="How far ahead to look.")
+@click.option("--dry-run", is_flag=True, help="Print what would be written.")
+@click.option("--shape", is_flag=True,
+              help="Report what Canvas actually sent, for when nothing parses.")
+def canvas_sync(days: int | None, dry_run: bool, shape: bool) -> None:
+    """Write assignments and due dates into the vault as markdown.
+
+    Not an MCP server on purpose: the vault is shared by every brain, so a
+    deadline written here is answerable by the fast free one instead of
+    costing a Claude Code session per question.
+    """
+    from .memory import Vault
+    from .sources import CanvasError
+    from .sources.canvas import describe_shape, render, write
+
+    client, settings = _canvas()
+    ahead = days if days is not None else settings.canvas.days_ahead
+
+    try:
+        found, raw = asyncio.run(
+            client.deadlines(settings.canvas.days_back, ahead)
+        )
+    except CanvasError as exc:
+        _fail(str(exc))
+
+    if shape or (raw and not found):
+        console.print("[bold]what Canvas actually sent[/]")
+        console.print(escape(describe_shape(raw)))
+        if not found and raw:
+            console.print(
+                "\n[yellow]Canvas sent items but none parsed as a deadline.[/] "
+                "The field names above are what this needs to read; send them "
+                "to me and it is a one-line fix."
+            )
+        if shape:
+            return
+
+    if dry_run:
+        console.print(escape(render(found, title="Upcoming")))
+        return
+
+    vault = Vault(settings.vault)
+    if not vault.exists:
+        _fail(f"no vault at {vault.root}", "Run `evie init` first.")
+
+    paths = write(vault, found)
+    late = sum(1 for d in found if d.overdue)
+    console.print(
+        f"[green]✓[/] {len(found)} items across {len(paths) - 1} courses"
+        + (f", [yellow]{late} late[/]" if late else "")
+    )
+    console.print(f"  [dim]{paths[0]}[/]")
+    console.print(
+        "\n[dim]Ask her \"what's due this week\" — it should be answered by the "
+        "quick brain, with no Canvas call.[/]"
+    )
+
+
 # -- memory --------------------------------------------------------------
 
 
