@@ -96,7 +96,7 @@ Takes a minute or two; onnxruntime and the Whisper libraries are large.
 pytest
 ```
 
-385 tests pass, with no hardware and no credentials.
+419 tests pass, with no hardware and no credentials.
 
 **5. Set up and go:**
 
@@ -126,7 +126,7 @@ brain authenticates itself, the same way you'd use it from a terminal:
 | `claude` | `npm i -g @anthropic-ai/claude-code && claude` → `/login` |
 | `gemini_cli` | `npm i -g @google/gemini-cli && gemini` → sign in (free, ~1,000 req/day) |
 | `codex` | `npm i -g @openai/codex && codex` → sign in |
-| `groq` | free key from [console.groq.com](https://console.groq.com) → `export GROQ_API_KEY=…` |
+| `groq` | free key from [console.groq.com](https://console.groq.com) → store it as `GROQ_API_KEY` (see below — not on a command line) |
 | `ollama` | `ollama pull qwen3:8b` — fully offline |
 
 Turn a brain on by setting `enabled: true` in `brains.yaml`.
@@ -144,10 +144,24 @@ E.V.I.E. reads `os.environ` at call time and never writes a credential to disk.
 That is what makes this config publishable, and it is enforced by a test:
 `TestRepoHygiene` scans every tracked file for credential shapes on each run.
 
-Put your keys in `~/.zshrc` so they persist across terminals:
+**Never put a key on a command line.** `echo 'export KEY=…' >> ~/.zshrc` is
+the obvious way and it is the unsafe one: the value lands in your shell
+history, is visible in `ps` while the command runs, and sits in your
+scrollback waiting to be copied somewhere with everything else around it.
+Two keys have leaked from this project exactly that way, and the second went
+while its owner was recovering from a typo in that very command.
+
+Paste at a prompt instead, where nothing echoes and nothing is recorded:
 
 ```bash
-echo 'export GROQ_API_KEY=your_key_here' >> ~/.zshrc
+read -rs "t?Paste the key, then press Enter: " && printf 'export GROQ_API_KEY=%s\n' "$t" >> ~/.zshrc && unset t
+```
+
+`evie canvas setup` does this for you for the Canvas token. Check a key is
+set, in a new terminal, without printing it:
+
+```bash
+echo ${#GROQ_API_KEY}
 ```
 
 If a key ever reaches a chat, a screenshot, or a commit, rotate it rather than
@@ -219,11 +233,12 @@ scheme and any `?login_success=1` are trimmed for you:
 evie canvas setup yourdistrict.instructure.com
 ```
 
-The token is **not** in config. Generate one in a browser — Account →
-Settings → "+ New Access Token" — and put it in your shell as
-`CANVAS_API_TOKEN`. Canvas shows it exactly once and it is password-
-equivalent, so treat it like any other key here: environment only, never in
-the repo. Some school districts disable token generation entirely; if the
+`setup` then prompts for the token: generate one in a browser at Account →
+Settings → "+ New Access Token", and paste it at the prompt. Nothing echoes,
+nothing reaches your shell history, and it is written to your shell rc with
+mode 600. Canvas shows a token exactly once and it is password-equivalent, so
+it is never accepted as a command-line argument — there is deliberately no
+`--token` option, and a test enforces that. Some school districts disable token generation entirely; if the
 "Approved Integrations" section is missing, that is the answer.
 
 Sync writes `classes/upcoming.md` and `classes/<course>/deadlines.md`. Only

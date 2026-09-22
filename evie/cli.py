@@ -500,6 +500,58 @@ def brains_test(only: str | None, one: str | None, skip: tuple[str, ...], deep: 
     console.print(f"[green]{summary}[/]")
 
 
+def _capture_secret(var: str, label: str) -> None:
+    """Take a credential from a person without it touching a command line.
+
+    `getpass` rather than an argument or an echoed prompt: a secret in argv is
+    in shell history, is visible in `ps`, and sits in the scrollback waiting
+    to be copied into a chat window with everything else. Two keys have
+    leaked from this project that way, and the second leak happened while
+    recovering from a typo in the very command the docs recommended.
+    """
+    from getpass import getpass
+
+    from .secrets import manual_instructions, shell_rc, store, why_not
+
+    rc = shell_rc()
+    console.print(
+        f"\n[yellow]${var} is not set.[/] Generate one in a browser at "
+        f"[bold]Account → Settings → '+ New Access Token'[/]."
+    )
+    if rc is None:
+        console.print("  " + escape(manual_instructions(var, rc)))
+        return
+    if not _is_interactive():
+        console.print("  " + escape(manual_instructions(var, rc)))
+        return
+
+    console.print(
+        f"  [dim]Paste it at the prompt — nothing will appear as you type, and "
+        f"it stays out of your shell history.[/]"
+    )
+    try:
+        value = getpass(f"  {label}: ")
+    except (EOFError, KeyboardInterrupt):
+        console.print("\n  [dim]Nothing saved.[/]")
+        return
+
+    if reason := why_not(value):
+        # The reason, never the value -- an error message is exactly when
+        # someone pastes their whole terminal at you.
+        _fail(f"that does not look like a token: {reason}",
+              f"Run `evie canvas setup` again when you have it.")
+
+    if not click.confirm(f"  Save it to {rc}?", default=True):
+        console.print("  " + escape(manual_instructions(var, rc)))
+        return
+
+    store(var, value, rc)
+    console.print(
+        f"  [green]✓[/] {len(value)} characters written to [dim]{rc}[/]\n"
+        f"  [dim]Open a new terminal, then: evie canvas status[/]"
+    )
+
+
 # -- canvas --------------------------------------------------------------
 
 
@@ -549,20 +601,13 @@ def canvas_setup(url: str) -> None:
     console.print(f"[green]✓[/] Canvas is [bold]{escape(base)}[/]")
     console.print(f"  [dim]{path}[/]")
 
-    import os as _os
-
     from .config import Settings
 
     var = Settings.load().canvas.token_env
-    if not _os.environ.get(var):
-        console.print(
-            f"\n[yellow]${var} is not set in this shell.[/] Generate a token in a "
-            f"browser at\n  Account → Settings → '+ New Access Token', then:\n"
-            f"    echo 'export {var}=your_token_here' >> ~/.zshrc\n"
-            f"  [dim]Open a new terminal afterwards, then: evie canvas status[/]"
-        )
-    else:
+    if os.environ.get(var):
         console.print("\n  [dim]Now: evie canvas status[/]")
+        return
+    _capture_secret(var, "Canvas token")
 
 
 @canvas.command("status")
