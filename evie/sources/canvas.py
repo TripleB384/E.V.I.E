@@ -22,6 +22,7 @@ import os
 import re
 from dataclasses import dataclass
 from typing import Any, Iterable
+from urllib.parse import urlparse
 
 import httpx
 
@@ -34,6 +35,33 @@ TIMEOUT = 30.0
 
 class CanvasError(Exception):
     """Something went wrong talking to Canvas, said in a way you can act on."""
+
+
+def clean_base_url(raw: str) -> str:
+    """Scheme and host, whatever someone pastes.
+
+    What people actually have to hand is the URL in their browser bar, and
+    that is `https://browardschools.instructure.com/?login_success=1` -- a
+    redirect artefact, a trailing slash and a query string. Keeping any of
+    them turns every API call into a 404 for a reason nobody would guess.
+    """
+    text = (raw or "").strip().strip("'\"")
+    if not text:
+        raise ValueError("no Canvas URL given")
+    if "://" not in text:
+        text = "https://" + text
+    parts = urlparse(text)
+    host = parts.netloc or parts.path.split("/")[0]
+    plausible = host and " " not in host and (
+        "." in host or ":" in host or host == "localhost"
+    )
+    if not plausible:
+        raise ValueError(
+            f"{raw!r} does not look like a Canvas host. It should be something "
+            f"like yourdistrict.instructure.com"
+        )
+    scheme = parts.scheme if parts.scheme in ("http", "https") else "https"
+    return f"{scheme}://{host}"
 
 
 @dataclass
@@ -175,8 +203,8 @@ class Canvas:
     def __init__(self, base_url: str, token: str) -> None:
         if not base_url:
             raise CanvasError(
-                "no Canvas URL configured. Add it to ~/.evie/config.yaml:\n"
-                "  canvas:\n    base_url: https://yourdistrict.instructure.com"
+                "no Canvas URL configured. Run:\n"
+                "    evie canvas setup yourdistrict.instructure.com"
             )
         if not token:
             raise CanvasError(
@@ -184,9 +212,7 @@ class Canvas:
                 "Account -> Settings -> '+ New Access Token', then:\n"
                 "  export CANVAS_API_TOKEN='...'   (in ~/.zshrc, not in this repo)"
             )
-        self.base_url = base_url.rstrip("/")
-        if not self.base_url.startswith(("http://", "https://")):
-            self.base_url = "https://" + self.base_url
+        self.base_url = clean_base_url(base_url)
         self._token = token
 
     @classmethod

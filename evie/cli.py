@@ -304,7 +304,7 @@ def brains_list() -> None:
     console.print("[dim]config: " + " + ".join(str(p) for p in layers) + "[/]")
 
 
-def _edit_overrides(change) -> Path:
+def _edit_overrides(change, filename: str = "brains.yaml") -> Path:
     """Apply `change` to your own override file, creating it if needed.
 
     Always your file, never the shipped defaults. Writing to whichever config
@@ -315,7 +315,7 @@ def _edit_overrides(change) -> Path:
 
     from .config import user_dir
 
-    path = user_dir() / "brains.yaml"
+    path = user_dir() / filename
     path.parent.mkdir(parents=True, exist_ok=True)
     data = (yaml.safe_load(path.read_text()) if path.is_file() else None) or {}
     change(data)
@@ -521,6 +521,48 @@ def _canvas():
         return Canvas.from_settings(settings), settings
     except CanvasError as exc:
         _fail(str(exc))
+
+
+@canvas.command("setup")
+@click.argument("url")
+def canvas_setup(url: str) -> None:
+    """Point E.V.I.E. at your school's Canvas.
+
+        evie canvas setup browardschools.instructure.com
+
+    Paste the URL straight from your browser bar -- the scheme, the trailing
+    slash and any ?login_success=1 are all trimmed. This exists because the
+    alternative is hand-editing YAML, and a config block in a chat window
+    looks exactly like something you paste into a shell.
+    """
+    from .sources.canvas import clean_base_url
+
+    try:
+        base = clean_base_url(url)
+    except ValueError as exc:
+        _fail(str(exc), "Try: evie canvas setup yourdistrict.instructure.com")
+
+    def change(data):
+        data.setdefault("canvas", {})["base_url"] = base
+
+    path = _edit_overrides(change, "config.yaml")
+    console.print(f"[green]✓[/] Canvas is [bold]{escape(base)}[/]")
+    console.print(f"  [dim]{path}[/]")
+
+    import os as _os
+
+    from .config import Settings
+
+    var = Settings.load().canvas.token_env
+    if not _os.environ.get(var):
+        console.print(
+            f"\n[yellow]${var} is not set in this shell.[/] Generate a token in a "
+            f"browser at\n  Account → Settings → '+ New Access Token', then:\n"
+            f"    echo 'export {var}=your_token_here' >> ~/.zshrc\n"
+            f"  [dim]Open a new terminal afterwards, then: evie canvas status[/]"
+        )
+    else:
+        console.print("\n  [dim]Now: evie canvas status[/]")
 
 
 @canvas.command("status")

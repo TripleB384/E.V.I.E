@@ -96,7 +96,7 @@ Takes a minute or two; onnxruntime and the Whisper libraries are large.
 pytest
 ```
 
-370 tests pass, with no hardware and no credentials.
+385 tests pass, with no hardware and no credentials.
 
 **5. Set up and go:**
 
@@ -207,16 +207,16 @@ layer to go stale.
 ## Canvas
 
 ```bash
-evie canvas status   # check the URL and token, write nothing
-evie canvas sync     # deadlines into the vault as markdown
+evie canvas setup <host>   # point it at your school, once
+evie canvas status         # check the URL and token, write nothing
+evie canvas sync           # deadlines into the vault as markdown
 ```
 
-Point it at your school:
+Point it at your school — paste the URL straight from your browser bar, the
+scheme and any `?login_success=1` are trimmed for you:
 
-```yaml
-# ~/.evie/config.yaml
-canvas:
-  base_url: https://yourdistrict.instructure.com
+```bash
+evie canvas setup yourdistrict.instructure.com
 ```
 
 The token is **not** in config. Generate one in a browser — Account →

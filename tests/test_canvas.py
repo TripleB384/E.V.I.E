@@ -244,8 +244,8 @@ class TestErrors:
     def test_anything_else_keeps_the_status(self):
         assert "503" in str(_explain(503, "down for maintenance", "https://x"))
 
-    def test_no_url_configured_names_the_file_and_the_key(self):
-        with pytest.raises(CanvasError, match="config.yaml"):
+    def test_no_url_configured_names_the_command_to_fix_it(self):
+        with pytest.raises(CanvasError, match="evie canvas setup"):
             Canvas("", "token")
 
     def test_no_token_names_the_env_var_and_where_to_get_one(self):
@@ -388,3 +388,55 @@ class TestTheSeamRenders:
         for _ in range(4):
             write(vault, [Deadline("AI301", "Lab 4", None)])
         assert "\n\n\n" not in path.read_text()
+
+
+class TestTheUrlSomeoneActuallyHas:
+    """What people have to hand is their browser bar, not a tidy hostname.
+
+    Isaac pasted `https://browardschools.instructure.com/?login_success=1` --
+    a redirect artefact, a trailing slash and a query string. Keeping any of
+    them turns every API call into a 404 for a reason nobody would guess.
+    """
+
+    import pytest as _pytest
+
+    @_pytest.mark.parametrize("raw", [
+        "https://browardschools.instructure.com/?login_success=1",
+        "https://browardschools.instructure.com/",
+        "https://browardschools.instructure.com/courses/101/assignments",
+        "browardschools.instructure.com",
+        "  https://browardschools.instructure.com  ",
+        "'https://browardschools.instructure.com'",
+        "https://browardschools.instructure.com#grades",
+    ])
+    def test_everything_reduces_to_scheme_and_host(self, raw):
+        from evie.sources.canvas import clean_base_url
+
+        assert clean_base_url(raw) == "https://browardschools.instructure.com"
+
+    def test_a_local_canvas_keeps_its_port_and_scheme(self):
+        """The dot check was rejecting localhost, which breaks anyone running
+        Canvas locally -- and the integration test server."""
+        from evie.sources.canvas import clean_base_url
+
+        assert clean_base_url("http://localhost:8799") == "http://localhost:8799"
+
+    @_pytest.mark.parametrize("bad", ["", "   ", "my school", "canvas", None])
+    def test_nonsense_is_refused_with_an_example(self, bad):
+        from evie.sources.canvas import clean_base_url
+
+        with pytest.raises(ValueError, match="instructure.com|no Canvas URL"):
+            clean_base_url(bad)
+
+    def test_the_client_normalises_on_the_way_in(self):
+        assert Canvas("browardschools.instructure.com/?login_success=1", "t").base_url == (
+            "https://browardschools.instructure.com"
+        )
+
+    def test_the_missing_url_error_names_the_command_not_a_yaml_block(self):
+        """A YAML snippet in an error message is something people paste into a
+        shell. That is exactly how this bug was reported."""
+        with pytest.raises(CanvasError) as exc:
+            Canvas("", "token")
+        assert "evie canvas setup" in str(exc.value)
+        assert "base_url:" not in str(exc.value)
