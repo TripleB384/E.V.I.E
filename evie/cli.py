@@ -24,6 +24,58 @@ from .brains.base import Health
 console = Console()
 err = Console(stderr=True, style="bold red")
 
+OVERRIDE_STUB = """# Your overrides, layered on top of the shipped defaults.
+#
+# Anything you set here wins. Anything you leave out keeps following
+# evie/defaults/brains.yaml, so new providers and better defaults reach you
+# without you doing anything. That is why this file starts empty instead of
+# as a copy -- a copy freezes the day you ran `evie init`, and later
+# improvements become invisible.
+#
+# See every available brain and where each setting came from:
+#     evie brains list
+#
+# Examples, all commented out:
+#
+# default: claude              # who answers when nothing else applies
+# quick: groq                  # short questions go here
+#
+# brains:
+#   groq:
+#     model: llama-3.3-70b-versatile   # change one field, keep the rest
+#   ollama:
+#     enabled: false                   # turn one off for good
+#   my_server:                         # or add one of your own
+#     kind: openai
+#     base_url: http://192.168.1.50:8080/v1
+#     model: whatever-i-am-running
+#     aliases: [homelab]
+"""
+
+STUB_CONFIG = """# Your overrides, layered on top of evie/defaults/config.yaml.
+# Set only what you want to change; the rest keeps following the defaults.
+#
+# hotkey: f13                # if Right Option is awkward in your terminal
+# voice:
+#   kokoro_voice: af_bella   # `evie say --help` lists the engines
+#   speed: 1.15
+# ears:
+#   model: tiny.en           # faster, worse at names
+"""
+
+
+def _is_interactive() -> bool:
+    """Whether this is a real terminal session.
+
+    Its own function because the alternative is unpatchable: a CLI test
+    runner replaces sys.stdin, so a direct sys.stdin.isatty() call can only
+    ever report the runner's pipe.
+    """
+    try:
+        return sys.stdin.isatty()
+    except (AttributeError, ValueError):
+        return False
+
 
 def _fail(message: str, hint: str = "") -> None:
     err.print(f"✗ {escape(message)}")
@@ -51,6 +103,18 @@ def run(debug: bool, brain: str | None) -> None:
     """Start the voice loop. Hold the hotkey to talk."""
     from .assistant import Assistant
 
+    # A global hotkey listener needs a real terminal session. Run from an
+    # agent's shell tool, a CI job or a pipe and the key press never arrives --
+    # the loop just sits there looking broken. Say so before spending thirty
+    # seconds loading Whisper and Kokoro to reach the same silence.
+    if not _is_interactive():
+        _fail(
+            "`evie run` needs an interactive terminal.",
+            "Open Terminal or iTerm directly, then: "
+            "cd ~/E.V.I.E && source .venv/bin/activate && evie run\n"
+            "  (`evie ask` and `evie say` work fine from a script or an agent's shell.)",
+        )
+
     try:
         assistant = Assistant.load()
         if brain:
@@ -62,6 +126,27 @@ def run(debug: bool, brain: str | None) -> None:
         from .loop import VoiceLoop
     except ImportError as exc:
         _fail(f"voice extras missing: {exc}", "uv pip install -e '.[voice]'")
+
+    # pynput only warns on stderr and carries on, so without this E.V.I.E.
+    # announces herself ready and then ignores every key press.
+    from .audio.capture import accessibility_trusted, request_accessibility
+
+    if accessibility_trusted() is False:
+        app = os.environ.get("TERM_PROGRAM", "your terminal")
+        err.print("✗ macOS has not granted this terminal Accessibility access.")
+        console.print(
+            f"  [yellow]The hotkey cannot work without it, so there is no point starting.[/]\n"
+            f"  Asking macOS to show its prompt now — it adds [bold]{app}[/] to the list "
+            f"for you,\n  which is easier than finding the '+' button.\n"
+        )
+        request_accessibility()
+        console.print(
+            "  Then: turn the switch [bold]on[/], [bold]quit the terminal with Cmd-Q[/], "
+            "reopen it, and run `evie run` again.\n"
+            "  [dim]The quit matters: macOS only applies this to a newly launched "
+            "process.[/]"
+        )
+        sys.exit(1)
 
     try:
         asyncio.run(VoiceLoop(assistant, debug=debug).run())
@@ -142,7 +227,7 @@ def brains(ctx: click.Context) -> None:
 @brains.command("list")
 def brains_list() -> None:
     """Show every brain, whether it works, and today's usage."""
-    from .config import load_registry
+    from .config import find_config, load_registry
 
     try:
         registry = load_registry()
@@ -151,61 +236,356 @@ def brains_list() -> None:
 
     statuses = asyncio.run(registry.health())
 
-    table = Table(title="brains", header_style="bold")
-    table.add_column("name")
-    table.add_column("kind")
-    table.add_column("tools")
-    table.add_column("status")
-    table.add_column("today", justify="right")
-    table.add_column("also called", style="dim")
-
+    kinds = {"CliBrain": "cli", "OpenAICompatBrain": "http", "EchoBrain": "echo"}
     marks = {
         Health.OK: "[green]ready[/]",
-        Health.UNAUTHENTICATED: "[yellow]not authenticated[/]",
-        Health.MISSING: "[red]missing[/]",
+        Health.UNVERIFIED: "[green]installed[/]",
+        Health.UNAUTHENTICATED: "[yellow]no key[/]",
+        Health.MISSING: "[red]unreachable[/]",
         Health.EXHAUSTED: "[yellow]rate limited[/]",
         Health.UNKNOWN: "[dim]unknown[/]",
     }
-    kinds = {"CliBrain": "cli", "OpenAICompatBrain": "http", "EchoBrain": "echo"}
-    for name in registry.names():
+
+    # Which tier sends work here, so the table answers "when does this get
+    # used" rather than only "does it exist".
+    serves: dict[str, list[str]] = {}
+    for tier, brain in registry.tiers.items():
+        serves.setdefault(brain, []).append(tier)
+
+    active = [n for n in registry.names() if not registry.is_parked(n)]
+    table = Table(title="in the rotation", header_style="bold")
+    table.add_column("name")
+    table.add_column("kind")
+    table.add_column("tools")
+    table.add_column("handles")
+    table.add_column("status")
+    table.add_column("today", justify="right")
+
+    for name in active:
         impl = registry.get(name)
         status = statuses[name]
-        active = " [bold green]←[/]" if name == registry.active else ""
+        flags = ""
+        if name == registry.pinned:
+            flags = " [bold yellow]📌[/]"
+        elif name == registry.active:
+            flags = " [bold green]←[/]"
         table.add_row(
-            f"{name}{active}",
+            f"{name}{flags}",
             kinds.get(type(impl).__name__, "?"),
-            "yes" if impl.agentic else "no",
+            "yes" if impl.agentic else "—",
+            ", ".join(serves.get(name, [])) or "[dim]fallback only[/]",
             f"{marks[status.health]} [dim]{escape(status.detail)}[/]",
             registry.headroom(name),
-            ", ".join(registry.aliases_for(name)[:4]),
         )
-
     console.print(table)
-    console.print(
-        f"[dim]default {registry.active} · quick {registry.quick or '—'} · "
-        f"fallback {' → '.join(registry.fallback) or '—'}[/]"
-    )
+
+    if registry.parked:
+        console.print("\n[dim]parked — not routed to, and skipped by the fallback "
+                      "chain:[/]")
+        for name, reason in registry.parked.items():
+            console.print(f"  [dim]{name:12}[/] [yellow]{escape(reason)}[/]")
+
+    console.print()
+    if registry.pinned:
+        console.print(
+            f"[yellow]pinned to {registry.pinned}[/] — say [bold]\"auto\"[/] to let "
+            f"her choose again"
+        )
+    else:
+        order = " · ".join(
+            f"{tier}→{registry.for_tier(tier)}" for tier in registry.TIER_ORDER
+        )
+        console.print(f"[dim]{order}[/]")
+    # The effective chain, not the configured one: showing a parked brain
+    # here would contradict the table directly above.
+    effective = [n for n in registry.fallback if not registry.is_parked(n)]
+    console.print(f"[dim]fallback {' → '.join(effective) or '—'}[/]")
+    layers = getattr(registry, "sources", None) or [find_config("brains.yaml")]
+    console.print("[dim]config: " + " + ".join(str(p) for p in layers) + "[/]")
+
+
+def _edit_overrides(change) -> Path:
+    """Apply `change` to your own override file, creating it if needed.
+
+    Always your file, never the shipped defaults. Writing to whichever config
+    happened to be found first would edit evie/defaults/brains.yaml inside the
+    repo -- turning up in `git status` and getting clobbered by the next pull.
+    """
+    import yaml
+
+    from .config import user_dir
+
+    path = user_dir() / "brains.yaml"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    data = (yaml.safe_load(path.read_text()) if path.is_file() else None) or {}
+    change(data)
+    path.write_text(yaml.safe_dump(data, sort_keys=False))
+    return path
+
+
+def _resolve_or_fail(name: str) -> str:
+    from .config import load_registry
+
+    try:
+        return load_registry().resolve(name)
+    except Exception as exc:
+        _fail(str(exc), "Run `evie brains list` to see the options.")
 
 
 @brains.command("use")
 @click.argument("name")
 def brains_use(name: str) -> None:
-    """Set the default brain (writes it to brains.yaml)."""
+    """Set the default brain."""
+    target = _resolve_or_fail(name)
+
+    def change(data):
+        data["default"] = target
+
+    path = _edit_overrides(change)
+    console.print(f"[green]✓[/] default brain is now [bold]{target}[/]")
+    console.print(f"  [dim]{path}[/]")
+
+
+@brains.command("disable")
+@click.argument("name")
+def brains_disable(name: str) -> None:
+    """Hide a brain you do not want, without editing YAML by hand."""
+    target = _resolve_or_fail(name)
+
+    def change(data):
+        data.setdefault("brains", {}).setdefault(target, {})["enabled"] = False
+
+    path = _edit_overrides(change)
+    console.print(f"[green]✓[/] [bold]{target}[/] is off")
+    console.print(f"  [dim]{path} — `evie brains enable {target}` to undo[/]")
+
+
+@brains.command("enable")
+@click.argument("name")
+def brains_enable(name: str) -> None:
+    """Turn a brain back on."""
     import yaml
 
-    from .config import find_config, load_registry
+    from .config import PACKAGE_DEFAULTS, user_dir
+
+    # The brain may be off precisely because it is absent from the merged
+    # registry, so resolve against the shipped roster rather than the live one.
+    shipped = yaml.safe_load((PACKAGE_DEFAULTS / "brains.yaml").read_text()) or {}
+    known = set(shipped.get("brains") or {})
+
+    # The override file is optional -- `evie init` writes an empty one, and a
+    # user who deletes it is in a perfectly good state. Reading it blindly
+    # crashed with FileNotFoundError for exactly that case.
+    override = user_dir() / "brains.yaml"
+    if override.is_file():
+        local = yaml.safe_load(override.read_text()) or {}
+        known |= set(local.get("brains") or {})
+
+    if name not in known:
+        _fail(
+            f"no brain called {name!r}. Known: {', '.join(sorted(known))}",
+            "Run `evie brains list` to see what is configured.",
+        )
+
+    def change(data):
+        data.setdefault("brains", {}).setdefault(name, {})["enabled"] = True
+
+    path = _edit_overrides(change)
+    console.print(f"[green]✓[/] [bold]{name}[/] is on")
+    console.print(f"  [dim]{path}[/]")
+
+
+PHASES = ("switch", "classify", "chain", "reach")
+
+
+
+@brains.command("test")
+@click.option("--only", type=click.Choice(PHASES), default=None,
+              help="Run one check. `switch` needs no keys and no network.")
+@click.option("--brain", "one", default=None,
+              help="Test one brain: its reach and how its provider rejects a bad key.")
+@click.option("--skip", multiple=True, help="Leave a brain out. Repeatable.")
+@click.option("--deep", is_flag=True,
+              help="Walk every position in the fallback chain, not just the head.")
+def brains_test(only: str | None, one: str | None, skip: tuple[str, ...], deep: bool) -> None:
+    """Make real calls and check the brains, the chain and switching.
+
+    Unlike `brains list`, which only pings /models or looks for a binary, this
+    runs an actual inference on every brain -- roughly one request each. Cheap
+    everywhere except `claude`, which boots a whole Claude Code session per
+    call: 5-11s and real plan allowance. `--skip claude` leaves it out.
+    """
+    from .config import PACKAGE_DEFAULTS, load_registry
+    from . import selftest
 
     try:
         registry = load_registry()
-        target = registry.resolve(name)
     except Exception as exc:
-        _fail(str(exc), "Run `evie brains list` to see the options.")
+        _fail(str(exc))
 
-    path = find_config("brains.yaml")
-    data = yaml.safe_load(path.read_text())
-    data["default"] = target
-    path.write_text(yaml.safe_dump(data, sort_keys=False))
-    console.print(f"[green]✓[/] default brain is now [bold]{target}[/] ({path})")
+    for name in (*skip, *( [one] if one else [] )):
+        try:
+            registry.resolve(name)
+        except Exception as exc:
+            _fail(str(exc), "Run `evie brains list` to see what is configured.")
+
+    if only:
+        wanted = [only]
+    elif one:
+        # `switch` and `chain` are properties of the whole roster, not of one
+        # brain, so naming a brain means the two checks that are about it.
+        wanted = ["classify", "reach"]
+    else:
+        wanted = list(PHASES)
+    results: list = []
+
+    async def go() -> None:
+        if "switch" in wanted:
+            results.extend(
+                selftest.switching(lambda: load_registry(PACKAGE_DEFAULTS / "brains.yaml"))
+            )
+        if "classify" in wanted:
+            results.extend(await selftest.classify(registry, only=one, skip=skip))
+        if "chain" in wanted:
+            results.extend(await selftest.chain(registry, deep=deep, skip=skip))
+        if "reach" in wanted:
+            results.extend(await selftest.reach(registry, only=one, skip=skip))
+
+    titles = {
+        "switch": "switching — is a brain swap still free?",
+        "classify": "classify — is a real provider rejection survivable?",
+        "chain": "chain — does she move on when a brain gives out?",
+        "reach": "reach — can every brain actually answer?",
+    }
+
+    try:
+        asyncio.run(go())
+    except Exception as exc:
+        _fail(str(exc))
+
+    for phase in wanted:
+        rows = [r for r in results if r.phase == phase]
+        if not rows:
+            continue
+        table = Table(title=titles[phase], header_style="bold", title_justify="left")
+        table.add_column("")
+        table.add_column("what")
+        table.add_column("result")
+        table.add_column("took", justify="right")
+        for r in rows:
+            mark = "[dim]–[/]" if r.skipped else ("[green]✓[/]" if r.ok else "[red]✗[/]")
+            style = "dim" if r.skipped else ("" if r.ok else "red")
+            table.add_row(
+                mark,
+                escape(r.name),
+                f"[{style}]{escape(r.detail)}[/]" if style else escape(r.detail),
+                f"{r.seconds:.1f}s" if r.seconds else "",
+            )
+        console.print(table)
+        console.print()
+
+    bad = selftest.failures(results)
+    passed = sum(1 for r in results if r.ok and not r.skipped)
+    skipped = sum(1 for r in results if r.skipped)
+    summary = f"{passed} passed, {len(bad)} failed"
+    if skipped:
+        summary += f", {skipped} skipped [dim](not configured, or not testable here)[/]"
+
+    if bad:
+        console.print(f"[red]{summary}[/]")
+        console.print("\n[dim]A brain green in `brains list` and red here means the "
+                      "health check is overstating readiness — it never ran an "
+                      "inference.[/]")
+        sys.exit(1)
+    console.print(f"[green]{summary}[/]")
+
+
+# -- memory --------------------------------------------------------------
+
+
+@main.group(invoke_without_command=True)
+@click.pass_context
+def memory(ctx: click.Context) -> None:
+    """Inspect and back up what she remembers."""
+    if ctx.invoked_subcommand is None:
+        ctx.invoke(memory_status)
+
+
+@memory.command("status")
+def memory_status() -> None:
+    """Show what is in the vault, how big it is, and whether it is backed up."""
+    from .config import Settings
+    from .memory import Vault, VaultGit, stats
+
+    settings = Settings.load()
+    vault = Vault(settings.vault)
+    if not vault.exists:
+        _fail(f"no vault at {vault.root}", "Run `evie init`.")
+
+    info = stats(vault)
+    kb = info["bytes"] / 1024
+    console.print(f"[bold]{vault.root}[/]")
+    console.print(
+        f"  {info['files']} notes · {info['days']} days logged · "
+        f"[bold]{kb:.0f} KB[/] total"
+    )
+    if info["first"]:
+        console.print(f"  from {info['first']} to {info['last']}")
+
+    # Put the size in terms anyone can judge.
+    if kb < 5000:
+        console.print(
+            f"  [dim]For scale: a decade at this rate is about "
+            f"{kb * 10 / max(info['days'], 1) * 365 / 1024:.0f} MB. "
+            f"Disk is not your constraint.[/]"
+        )
+
+    git = VaultGit(vault)
+    if not git.initialized:
+        console.print(
+            "\n  [yellow]Not backed up.[/] One copy, one machine. To fix, make an "
+            "empty\n  [bold]private[/] repo on GitHub and run:\n"
+            "    [bold]evie memory setup git@github.com:you/evie-vault.git[/]"
+        )
+    elif remote := git.remote():
+        console.print(f"\n  [green]backed up[/] → {remote}")
+    else:
+        console.print("\n  [yellow]local git only[/] — no remote set")
+
+
+@memory.command("setup")
+@click.argument("remote")
+def memory_setup(remote: str) -> None:
+    """Point the vault at a private git remote for free, versioned backup."""
+    from .config import Settings
+    from .memory import GitError, Vault, VaultGit
+
+    vault = Vault(Settings.load().vault)
+    if not vault.exists:
+        _fail(f"no vault at {vault.root}", "Run `evie init`.")
+    try:
+        git = VaultGit(vault)
+        git.setup(remote)
+        console.print(f"[green]✓[/] {vault.root} → {remote}")
+        console.print("  Now run [bold]evie memory sync[/] to push what she already has.")
+    except GitError as exc:
+        _fail(str(exc))
+
+
+@memory.command("sync")
+@click.option("--message", "-m", default=None, help="Commit message.")
+def memory_sync(message: str | None) -> None:
+    """Commit and push the vault."""
+    from .config import Settings
+    from .memory import GitError, Vault, VaultGit
+
+    vault = Vault(Settings.load().vault)
+    if not vault.exists:
+        _fail(f"no vault at {vault.root}", "Run `evie init`.")
+    try:
+        console.print(f"[green]✓[/] {VaultGit(vault).sync(message)}")
+    except GitError as exc:
+        _fail(str(exc), "Check the remote exists and you can push to it.")
 
 
 # -- setup and diagnosis -------------------------------------------------
@@ -215,18 +595,20 @@ def brains_use(name: str) -> None:
 @click.option("--owner", default=None, help="Your name, for EVIE.md.")
 def init(owner: str | None) -> None:
     """Create the vault and copy the starter config into ~/.evie."""
-    import shutil
-
-    from .config import PACKAGE_DEFAULTS, USER_DIR, Settings
+    from .config import Settings, user_dir
     from .memory import Vault
 
-    USER_DIR.mkdir(parents=True, exist_ok=True)
-    for name in ("brains.yaml", "config.yaml"):
-        src = PACKAGE_DEFAULTS / name
-        dst = USER_DIR / name
-        if src.is_file() and not dst.exists():
-            shutil.copy(src, dst)
-            console.print(f"[green]✓[/] wrote {dst}")
+    home = user_dir()
+    home.mkdir(parents=True, exist_ok=True)
+    # Deliberately a stub, not a copy of the defaults. A copy wins over the
+    # shipped config forever, so it silently freezes your setup on the day you
+    # ran this -- new brains never appear, and an API key you export has
+    # nothing to read it.
+    for name, stub in (("brains.yaml", OVERRIDE_STUB), ("config.yaml", STUB_CONFIG)):
+        dst = home / name
+        if not dst.exists():
+            dst.write_text(stub)
+            console.print(f"[green]✓[/] wrote {dst} [dim](empty — overrides only)[/]")
 
     settings = Settings.load()
     vault = Vault(settings.vault).ensure(owner or os.environ.get("USER", "you"))
@@ -254,11 +636,18 @@ def doctor(fix: bool) -> None:
 
     console.print("[bold]config[/]")
     try:
-        from .config import Settings, load_registry
+        from .config import Settings, find_config, load_registry
 
         settings = Settings.load()
         registry = load_registry()
+        source = find_config("brains.yaml")
         check("brains.yaml", True, f"{len(registry.names())} brains, default {registry.active}")
+        console.print(f"  [dim]loaded from {source}[/]")
+        if source.parent == Path.cwd():
+            console.print(
+                "  [yellow]This is a local override, not the shipped config. "
+                "Delete it to pick up updates from git.[/]"
+            )
     except Exception as exc:
         check("brains.yaml", False, "", str(exc))
         console.print("\n[red]Cannot continue without config.[/] Run `evie init`.")
@@ -274,6 +663,16 @@ def doctor(fix: bool) -> None:
         )
     check("at least one brain usable", bool(usable), f"{len(usable)} ready",
           "Install a CLI (claude/gemini/codex) or set an API key env var.")
+
+    console.print("\n[bold]python[/]")
+    version = ".".join(str(n) for n in sys.version_info[:3])
+    check(
+        f"python {version}",
+        sys.version_info >= (3, 11),
+        "",
+        "Kokoro needs onnxruntime, which only ships wheels for 3.11+. "
+        "macOS ships 3.9. Recreate the venv with: uv venv --python 3.12",
+    )
 
     console.print("\n[bold]python packages[/]")
     for mod, extra in (
@@ -322,15 +721,35 @@ def doctor(fix: bool) -> None:
     except Exception as exc:
         check("audio devices", False, "", f"{exc}")
 
+    if not _is_interactive():
+        console.print(
+            "\n[yellow]Not a terminal session.[/] Checks below are unreliable here: this\n"
+            "  shell doesn't read your ~/.zshrc, so exported API keys look unset, and\n"
+            "  `evie run` can't receive hotkeys at all. Re-run in Terminal or iTerm."
+        )
+
     if sys.platform == "darwin":
         console.print("\n[bold]macOS permissions[/]")
-        console.print(
-            "  [yellow]Global hotkeys need Input Monitoring AND Accessibility granted to your\n"
-            "  terminal app — not to Python. This is the single most common reason\n"
-            "  push-to-talk silently does nothing.[/]\n"
-            "  [dim]System Settings > Privacy & Security > Input Monitoring\n"
-            "  System Settings > Privacy & Security > Accessibility[/]"
-        )
+        try:
+            from .audio.capture import accessibility_trusted
+
+            trusted = accessibility_trusted()
+        except Exception:
+            trusted = None
+
+        if trusted is None:
+            console.print(
+                "  [dim]Could not query Accessibility. Grant it to your terminal app "
+                "(not Python) if the hotkey does nothing.[/]"
+            )
+        else:
+            check(
+                "Accessibility (global hotkey)",
+                trusted,
+                "granted to this terminal" if trusted else "",
+                "Run `evie run` — it will ask macOS to add this terminal to the list, "
+                "then turn the switch on, quit with Cmd-Q, and reopen.",
+            )
         check("`say` fallback voice", _shutil.which("say") is not None)
 
     console.print("\n[bold]vault[/]")

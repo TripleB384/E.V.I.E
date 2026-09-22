@@ -27,7 +27,17 @@ from .brains import (
 )
 
 PACKAGE_DEFAULTS = Path(__file__).parent / "defaults"
-USER_DIR = Path(os.environ.get("EVIE_HOME", Path.home() / ".evie"))
+
+
+def user_dir() -> Path:
+    """Where your own config lives.
+
+    Read on every call rather than captured at import. A module-level constant
+    froze $EVIE_HOME to whatever it was when the package was first imported,
+    which is invisible in normal use -- the environment is set before launch --
+    and makes the whole layer untestable in-process.
+    """
+    return Path(os.environ.get("EVIE_HOME", Path.home() / ".evie"))
 
 
 class ConfigError(Exception):
@@ -35,7 +45,49 @@ class ConfigError(Exception):
 
 
 def _search_path(filename: str) -> list[Path]:
-    return [Path.cwd() / filename, USER_DIR / filename, PACKAGE_DEFAULTS / filename]
+    return [Path.cwd() / filename, user_dir() / filename, PACKAGE_DEFAULTS / filename]
+
+
+def config_layers(filename: str) -> list[Path]:
+    """Every config file that applies, least specific first.
+
+    Config used to be winner-takes-all: the nearest file won and the rest were
+    ignored. `evie init` copies the shipped defaults into ~/.evie, which froze
+    a snapshot the day you ran it -- new brains and changed defaults could
+    never reach you, silently. Setting GEMINI_API_KEY did nothing, because no
+    brain existed to read it, and nothing was wrong enough to report.
+
+    Layering instead: package defaults underneath, your edits on top.
+    """
+    found = [p for p in reversed(_search_path(filename)) if p.is_file()]
+    if not found:
+        raise ConfigError(
+            f"no {filename} found. Looked in: "
+            + ", ".join(str(p) for p in _search_path(filename))
+        )
+    return found
+
+
+def _merge(base: dict[str, Any], over: dict[str, Any]) -> dict[str, Any]:
+    """Overlay `over` onto `base`, one level into nested mappings.
+
+    Deep enough for brains (per-brain keys merge, so overriding a model does
+    not delete its aliases) and shallow enough to stay predictable. A list
+    replaces rather than appends: someone who writes a `fallback` order means
+    that order, not that order plus ours.
+    """
+    result = dict(base)
+    for key, value in over.items():
+        if isinstance(value, dict) and isinstance(result.get(key), dict):
+            result[key] = {**result[key], **{
+                k: ({**result[key][k], **v}
+                    if isinstance(v, dict) and isinstance(result[key].get(k), dict)
+                    else v)
+                for k, v in value.items()
+            }}
+        else:
+            result[key] = value
+    return result
 
 
 def find_config(filename: str) -> Path:
@@ -87,12 +139,15 @@ class Settings:
     def load(cls, path: Path | None = None) -> "Settings":
         if path is None:
             try:
-                path = find_config("config.yaml")
+                raw: dict[str, Any] = {}
+                for layer in config_layers("config.yaml"):
+                    raw = _merge(raw, _load_yaml(layer))
             except ConfigError:
                 return cls()  # no config anywhere is fine; defaults are sane
         elif not path.is_file():
             raise ConfigError(f"config file not found: {path}")
-        raw = _load_yaml(path)
+        else:
+            raw = _load_yaml(path)
         return cls(
             hotkey=raw.get("hotkey", cls.hotkey),
             wake_word=raw.get("wake_word", ""),
@@ -155,12 +210,17 @@ def build_brain(name: str, spec: dict[str, Any]) -> Brain:
 
 
 def load_registry(path: Path | None = None) -> BrainRegistry:
-    path = path or find_config("brains.yaml")
-    raw = _load_yaml(path)
+    if path is not None:
+        raw, sources = _load_yaml(path), [path]
+    else:
+        sources = config_layers("brains.yaml")
+        raw = {}
+        for layer in sources:
+            raw = _merge(raw, _load_yaml(layer))
 
     specs = raw.get("brains") or {}
     if not specs:
-        raise ConfigError(f"{path} defines no brains")
+        raise ConfigError(f"{sources[-1]} defines no brains")
 
     brains: dict[str, Brain] = {}
     aliases: dict[str, str] = {}
@@ -178,27 +238,30 @@ def load_registry(path: Path | None = None) -> BrainRegistry:
             limits[name] = int(limit)
 
     if not brains:
-        raise ConfigError(f"{path}: every brain is disabled")
+        raise ConfigError(f"{sources[-1]}: every brain is disabled")
 
     default = raw.get("default") or next(iter(brains))
     if default not in brains:
         raise ConfigError(f"default brain {default!r} is not defined or is disabled")
 
-    return BrainRegistry(
+    registry = BrainRegistry(
         brains,
         default=default,
         quick=raw.get("quick"),
+        tiers=raw.get("tiers") or {},
         fallback=raw.get("fallback") or [],
         aliases=aliases,
         daily_limits=limits,
     )
+    registry.sources = sources
+    return registry
 
 
 def load_identity(settings: Settings) -> str:
     """Read EVIE.md -- who she is and what she already knows about you."""
     for candidate in (
         settings.vault / settings.identity_file,
-        USER_DIR / settings.identity_file,
+        user_dir() / settings.identity_file,
         Path.cwd() / settings.identity_file,
         PACKAGE_DEFAULTS / "EVIE.md",
     ):

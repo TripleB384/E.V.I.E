@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import AsyncIterator, Protocol, runtime_checkable
+from typing import AsyncIterator, NamedTuple, Protocol, runtime_checkable
 
 
 class BrainError(Exception):
@@ -34,7 +34,8 @@ class BrainRefused(BrainError):
 
 
 class Health(Enum):
-    OK = "ok"
+    OK = "ok"                      # verified: we reached it
+    UNVERIFIED = "unverified"      # installed, but reachability costs a real call
     UNAUTHENTICATED = "unauthenticated"
     MISSING = "missing"
     EXHAUSTED = "exhausted"
@@ -48,7 +49,8 @@ class BrainStatus:
 
     @property
     def usable(self) -> bool:
-        return self.health is Health.OK
+        """Worth trying. Not a promise it will work."""
+        return self.health in (Health.OK, Health.UNVERIFIED)
 
 
 @dataclass
@@ -89,10 +91,36 @@ class Context:
         return "Earlier in this conversation:\n" + "\n".join(lines)
 
 
+class Unconfigured(NamedTuple):
+    """Why a brain cannot be used, stated in one line, or None if it can."""
+
+    reason: str
+
+
 @runtime_checkable
 class Brain(Protocol):
     name: str
     agentic: bool  # can it read files, run commands, use tools?
+
+    def describe(self) -> str:
+        """What is actually behind this brain, in one phrase.
+
+        Injected into the system prompt so a brain asked what it is can
+        answer from fact rather than from its own training data, which
+        describes the weights and knows nothing about this deployment.
+        """
+        ...
+
+    def missing(self) -> str | None:
+        """Why this brain is not set up, cheaply. None means it is.
+
+        Must not touch the network or spawn anything: it runs for every brain
+        on every load, to decide which ones belong in the routing flow at all.
+        A brain with no API key is not a brain that is down -- it is one you
+        never set up, and it should stay out of the way rather than fail in
+        the middle of a conversation.
+        """
+        ...
 
     def stream(self, prompt: str, ctx: Context) -> AsyncIterator[str]:
         """Yield response text incrementally. Raise a BrainError on failure."""

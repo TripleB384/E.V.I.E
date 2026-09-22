@@ -84,3 +84,57 @@ class TestForSpeech:
     def test_iter_sentences_covers_whole_text(self):
         text = "First sentence here. Second sentence here. Trailing bit"
         assert "".join(iter_sentences(text)).replace(" ", "") == text.replace(" ", "")
+
+
+class TestSingleSentenceAnswers:
+    """Spoken answers frequently run to one sentence. Waiting for a full stop
+    then means waiting for the entire reply.
+
+    Measured on a real turn before this was handled: first token 5.41s, first
+    audio 13.35s -- eight seconds of silence while a 192-character answer with
+    no interior period accumulated.
+    """
+
+    MOON = (
+        "The Moon is about 238,900 miles (384,400 km) from Earth on average — though it "
+        "varies a bit since the orbit isn't a perfect circle, from around 225,000 miles "
+        "at closest to 252,000 at farthest."
+    )
+
+    async def _chunks(self, text, size=8):
+        async def stream():
+            for i in range(0, len(text), size):
+                yield text[i : i + size]
+
+        return [p async for p in speakable(stream())]
+
+    async def test_a_one_sentence_answer_still_starts_early(self):
+        chunks = await self._chunks(self.MOON)
+        assert len(chunks) > 1, "must not buffer a whole single-sentence reply"
+        assert len(chunks[0]) < len(self.MOON) / 2, "first phrase should be well short"
+
+    async def test_the_first_phrase_is_a_natural_pause(self):
+        chunks = await self._chunks(self.MOON)
+        assert chunks[0].endswith("on average"), chunks[0]
+
+    async def test_nothing_is_dropped(self):
+        chunks = await self._chunks(self.MOON)
+        rejoined = " ".join(chunks).replace(" ", "")
+        original = self.MOON.replace(" ", "").replace("—", "")
+        assert rejoined.replace("—", "") == original
+
+    async def test_the_first_phrase_beats_the_sentence_threshold(self):
+        """A comma early on should release audio sooner than a distant period."""
+        text = "Yes, absolutely, and the reason is that the compiler runs in two passes."
+        chunks = await self._chunks(text)
+        assert chunks[0].startswith("Yes, absolutely,"), chunks[0]
+
+
+class TestSpokenPunctuation:
+    def test_a_dash_becomes_a_pause_not_a_word(self):
+        assert for_speech("on average — though it varies") == "on average, though it varies"
+
+    def test_a_phrase_never_opens_on_punctuation(self):
+        # Clause splitting can leave a dash or comma leading the next chunk.
+        assert for_speech("— though it varies") == "though it varies"
+        assert for_speech(", and then") == "and then"

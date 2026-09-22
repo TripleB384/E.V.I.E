@@ -110,18 +110,74 @@ class TestShippedDefaults:
         for name in ("brains.yaml", "config.yaml", "EVIE.md"):
             assert (PACKAGE_DEFAULTS / name).is_file(), f"missing default: {name}"
 
+    def test_echo_works_out_of_the_box(self):
+        """The zero-credential smoke test has to work with zero setup.
+
+        It shipped disabled, so the first command in the setup instructions
+        -- the one that proves your install before any account is involved --
+        failed with "no brain called 'echo'".
+        """
+        from evie.config import PACKAGE_DEFAULTS
+
+        reg = load_registry(PACKAGE_DEFAULTS / "brains.yaml")
+        assert "echo" in reg.names()
+        assert reg.resolve("echo") == "echo"
+        # ...but it must never be a fallback: silently answering "You said: x"
+        # instead of a real reply would look like a working assistant.
+        assert "echo" not in reg.fallback
+        assert reg.active != "echo"
+
+    def test_an_unknown_brain_names_the_alternatives(self):
+        from evie.brains.registry import UnknownBrain
+        from evie.config import PACKAGE_DEFAULTS
+
+        reg = load_registry(PACKAGE_DEFAULTS / "brains.yaml")
+        with pytest.raises(UnknownBrain) as exc:
+            reg.resolve("clod")
+        message = str(exc.value)
+        assert "clod" in message and "claude" in message
+        assert not message.startswith("\'"), "KeyError repr quoting leaked through"
+
     def test_the_bundled_brains_yaml_actually_loads(self):
         """The file every new user starts from must not be broken."""
         from evie.config import PACKAGE_DEFAULTS
 
         reg = load_registry(PACKAGE_DEFAULTS / "brains.yaml")
-        assert reg.active == "claude"
         assert reg.resolve("google") == "gemini_cli"
         assert reg.get("claude").agentic, "a CLI brain must be able to use tools"
         assert not reg.get("groq").agentic, "an HTTP brain has no hands"
         # Everything the fallback chain names must actually be loadable, or
         # the chain silently gets shorter than it looks.
         assert all(n in reg.names() for n in reg.fallback)
+
+    def test_conversation_defaults_to_a_fast_brain(self):
+        """`claude -p` measured 5-11s to first token because each call boots a
+        Claude Code session. That is the wrong default for talking to someone,
+        and it spends plan allowance on small talk."""
+        from evie.config import PACKAGE_DEFAULTS
+
+        reg = load_registry(PACKAGE_DEFAULTS / "brains.yaml")
+        assert not reg.get(reg.active).agentic, (
+            "the default brain should be a fast conversational one; the router "
+            "escalates task-shaped requests to an agentic brain on its own"
+        )
+
+    def test_an_agentic_brain_is_still_reachable(self):
+        """Escalation has somewhere to go, or real work silently degrades."""
+        from evie.config import PACKAGE_DEFAULTS
+
+        reg = load_registry(PACKAGE_DEFAULTS / "brains.yaml")
+        assert any(reg.get(n).agentic for n in reg.names())
+
+    def test_the_chain_ends_on_an_ollama_option(self):
+        """Local Ollama ships off, because nothing can cheaply detect that it
+        is not running -- unlike a missing API key. Ollama Cloud needs only a
+        key, so that is the one enabled by default, and it sits last."""
+        from evie.config import PACKAGE_DEFAULTS
+
+        reg = load_registry(PACKAGE_DEFAULTS / "brains.yaml")
+        assert reg.fallback[-1] == "ollama_cloud"
+        assert "ollama" not in reg.names(), "local Ollama is opt-in"
 
     def test_disabled_brains_contribute_no_aliases(self):
         """Otherwise "switch to local" resolves to a brain that isn't there."""
@@ -153,3 +209,499 @@ class TestShippedDefaults:
         # Silently ignoring a path the user typed would hide their typo.
         with pytest.raises(ConfigError, match="not found"):
             Settings.load(tmp_path / "typo.yaml")
+
+
+class TestRepoHygiene:
+    """Checks on what the repository ships, not on what the code does.
+
+    A stale root brains.yaml shadowed the package defaults for every clone
+    while every other test passed -- because the defaults were correct the
+    whole time; they just were not what got loaded. Catching that means
+    looking at what git tracks.
+    """
+
+    def _tracked(self) -> set[str]:
+        import subprocess
+        from pathlib import Path
+
+        root = Path(__file__).resolve().parents[1]
+        out = subprocess.run(
+            ["git", "ls-files"], cwd=root, capture_output=True, text=True, check=True
+        )
+        return set(out.stdout.split())
+
+    @pytest.mark.parametrize("path", ["brains.yaml", "config.yaml"])
+    def test_root_config_is_not_shipped(self, path):
+        tracked = self._tracked()
+        assert path not in tracked, (
+            f"{path} is tracked at the repo root. Config resolves ./{path} before "
+            f"the package defaults, so shipping it freezes every clone's config at "
+            f"whatever this file said. Run: git rm --cached {path}"
+        )
+
+    # Shapes of the credentials this project plausibly touches. Matching the
+    # prefix plus a run of key characters keeps `api_key_env: GROQ_API_KEY`
+    # and prose like "sk-ant-..." from tripping it.
+    SECRET_SHAPES = (
+        r"gsk_[A-Za-z0-9]{20,}",        # Groq
+        r"sk-ant-[A-Za-z0-9_-]{20,}",   # Anthropic
+        r"sk-[A-Za-z0-9]{32,}",         # OpenAI
+        r"ghp_[A-Za-z0-9]{20,}",        # GitHub
+        r"AIza[A-Za-z0-9_-]{30,}",      # Google, legacy "standard" key
+        r"AQ\.Ab[A-Za-z0-9_-]{20,}",    # Google, current AI Studio "auth" key
+        r"sk-or-v?\d?-?[A-Za-z0-9]{32,}",  # OpenRouter
+        r"xi-api-key:\s*[A-Za-z0-9]{20,}",  # ElevenLabs
+    )
+
+    def test_no_tracked_file_contains_a_credential(self):
+        """This repo is public and its users paste API keys into shells.
+
+        Keys live in the environment and nothing writes them to disk, but that
+        is a property of today's code, not a guarantee about tomorrow's. Check
+        what is actually tracked.
+        """
+        import re
+        from pathlib import Path
+
+        root = Path(__file__).resolve().parents[1]
+        pattern = re.compile("|".join(self.SECRET_SHAPES))
+        offenders = []
+        for rel in sorted(self._tracked()):
+            path = root / rel
+            if not path.is_file():
+                continue
+            try:
+                text = path.read_text(errors="ignore")
+            except OSError:
+                continue
+            if match := pattern.search(text):
+                # Report the location and the shape, never the value.
+                offenders.append(f"{rel} (matched {match.re.pattern[:12]}…)")
+        assert not offenders, "credential-shaped strings in tracked files: " + "; ".join(
+            offenders
+        )
+
+    def test_the_scanner_would_catch_a_real_key(self):
+        """A scanner nobody has seen fail is not a scanner."""
+        import re
+
+        pattern = re.compile("|".join(self.SECRET_SHAPES))
+        assert pattern.search("GROQ_API_KEY=gsk_" + "a1B2c3D4e5F6g7H8i9J0k1L2")
+        assert pattern.search("token: ghp_" + "0123456789abcdefghijABCD")
+        # Google moved new AI Studio keys from AIza to AQ.Ab in May 2026, and
+        # is retiring AIza entirely -- a scanner that only knew the old shape
+        # would wave every current Google key straight through.
+        assert pattern.search("GEMINI_API_KEY=AQ.Ab" + "8xK2mQ7pL4nR9tV3wY6zB1")
+        assert pattern.search("OPENROUTER_API_KEY=sk-or-v1-" + "a" * 40)
+        # ...and would not fire on the config that names variables.
+        assert not pattern.search("api_key_env: GROQ_API_KEY")
+        assert not pattern.search("export GROQ_API_KEY=your_key_here")
+
+    def test_env_files_are_ignored(self):
+        from pathlib import Path
+
+        rules = (Path(__file__).resolve().parents[1] / ".gitignore").read_text()
+        for rule in (".env", "*.env"):
+            assert rule in rules, f"{rule} must be gitignored in a public repo"
+
+    def test_the_defaults_that_should_ship_do(self):
+        tracked = self._tracked()
+        for name in ("brains.yaml", "config.yaml", "EVIE.md"):
+            assert f"evie/defaults/{name}" in tracked
+
+
+class TestInteractiveGuard:
+    """`evie run` cannot work without a TTY, and should say so immediately.
+
+    Every command in this project's bring-up was driven through an agent's
+    shell tool. That is fine for `ask` and `say`; for `run` the hotkey press
+    never arrives, and without a guard the failure looks like broken audio
+    after a thirty-second model load.
+    """
+
+    def _invoke(self, args, stdin_isatty, tmp_path, monkeypatch):
+        """Run the CLI with config resolution pinned to the shipped defaults.
+
+        Without this the test picks up whatever brains.yaml happens to sit in
+        the working directory -- which is exactly how the stale-config bug hid
+        for five commits. A test that reads the developer's local config is
+        testing the developer's machine.
+        """
+        from unittest.mock import patch
+
+        from click.testing import CliRunner
+
+        from evie.cli import main
+
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setenv("EVIE_HOME", str(tmp_path / "home"))
+        with patch("evie.cli._is_interactive", return_value=stdin_isatty):
+            return CliRunner().invoke(main, args)
+
+    def test_run_refuses_without_a_tty(self, tmp_path, monkeypatch):
+        result = self._invoke(["run"], False, tmp_path, monkeypatch)
+        assert result.exit_code != 0
+        assert "interactive terminal" in result.output
+        assert "Terminal or iTerm" in result.output
+
+    def test_run_refuses_when_accessibility_is_denied(self, tmp_path, monkeypatch):
+        """pynput warns on stderr and carries on, so E.V.I.E. would announce
+        herself ready and then ignore every key press. Refuse instead."""
+        from unittest.mock import patch
+
+        from click.testing import CliRunner
+
+        from evie.cli import main
+
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setenv("EVIE_HOME", str(tmp_path / "home"))
+        with patch("evie.cli._is_interactive", return_value=True), patch(
+            "evie.audio.capture.accessibility_trusted", return_value=False
+        ), patch("evie.audio.capture.request_accessibility", return_value=False) as ask:
+            result = CliRunner().invoke(main, ["run"])
+
+        assert result.exit_code != 0
+        assert "Accessibility" in result.output
+        assert "Cmd-Q" in result.output, "the relaunch step is the part people skip"
+        assert ask.called, "should trigger the system prompt, not just complain"
+
+    def test_ask_still_works_without_a_tty(self, tmp_path, monkeypatch):
+        # Scripts and agents must keep working -- only `run` needs the guard.
+        result = self._invoke(["ask", "hi", "--brain", "echo"], False, tmp_path, monkeypatch)
+        assert result.exit_code == 0, result.output
+        assert "You said: hi" in result.output
+
+
+class TestConfigLayering:
+    """User config overlays the shipped defaults; it does not replace them.
+
+    Winner-takes-all resolution meant `evie init`'s copy froze a user's setup
+    on the day they ran it. New brains never appeared, and exporting
+    GEMINI_API_KEY did nothing because no brain existed to read it -- with no
+    error, since nothing was wrong from that config's point of view.
+    """
+
+    def _user_config(self, tmp_path, monkeypatch, data):
+        import yaml
+
+        home = tmp_path / ".evie"
+        home.mkdir(parents=True, exist_ok=True)
+        (home / "brains.yaml").write_text(yaml.safe_dump(data))
+        monkeypatch.setenv("EVIE_HOME", str(home))
+        monkeypatch.chdir(tmp_path)  # no ./brains.yaml to interfere
+        return home
+
+    def test_shipped_brains_survive_a_user_file(self, tmp_path, monkeypatch):
+        """The exact failure: a four-brain user file hiding the full roster."""
+        self._user_config(tmp_path, monkeypatch, {
+            "default": "claude",
+            "brains": {"claude": {"kind": "cli", "command": ["claude", "{prompt}"]}},
+        })
+        reg = load_registry()
+        for shipped in ("groq", "gemini_api", "openrouter", "github", "ollama_cloud"):
+            assert shipped in reg.names(), f"{shipped} vanished behind the user file"
+
+    def test_a_user_value_still_wins(self, tmp_path, monkeypatch):
+        self._user_config(tmp_path, monkeypatch, {"default": "echo"})
+        assert load_registry().active == "echo"
+
+    def test_one_field_can_be_overridden_without_losing_the_rest(
+        self, tmp_path, monkeypatch
+    ):
+        self._user_config(tmp_path, monkeypatch, {
+            "brains": {"groq": {"model": "llama-3.3-70b-versatile"}},
+        })
+        reg = load_registry()
+        assert reg.get("groq").spec.model == "llama-3.3-70b-versatile"
+        # aliases and base_url came from the defaults and must still be there
+        assert reg.resolve("fast") == "groq"
+        assert "groq.com" in reg.get("groq").spec.base_url
+
+    def test_turning_a_brain_off_sticks(self, tmp_path, monkeypatch):
+        self._user_config(tmp_path, monkeypatch, {
+            "brains": {"gemini_cli": {"enabled": False}},
+        })
+        assert "gemini_cli" not in load_registry().names()
+
+    def test_a_brain_of_your_own_is_added(self, tmp_path, monkeypatch):
+        self._user_config(tmp_path, monkeypatch, {
+            "brains": {"homelab": {
+                "kind": "openai", "base_url": "http://192.168.1.50:8080/v1",
+                "model": "mine", "aliases": ["homelab"],
+            }},
+        })
+        reg = load_registry()
+        assert reg.resolve("homelab") == "homelab"
+        assert "groq" in reg.names(), "adding one must not drop the others"
+
+    def test_a_user_fallback_order_replaces_rather_than_appends(
+        self, tmp_path, monkeypatch
+    ):
+        # A list is a stated preference, not a contribution to ours.
+        self._user_config(tmp_path, monkeypatch, {"fallback": ["echo"]})
+        assert load_registry().fallback == ["echo"]
+
+    def test_the_layers_are_reported(self, tmp_path, monkeypatch):
+        self._user_config(tmp_path, monkeypatch, {"default": "echo"})
+        sources = load_registry().sources
+        assert len(sources) == 2, "defaults plus the user file"
+        assert sources[0].parent.name == "defaults", "package layer goes first"
+
+
+class TestInitWritesStubs:
+    """`evie init` must not copy the defaults.
+
+    A copy wins over the shipped config permanently, which is the mechanism
+    behind the staleness above.
+    """
+
+    def test_the_written_config_overrides_nothing(self, tmp_path, monkeypatch):
+        import yaml
+        from click.testing import CliRunner
+
+        from evie.cli import main
+
+        monkeypatch.setenv("EVIE_HOME", str(tmp_path / ".evie"))
+        monkeypatch.setenv("HOME", str(tmp_path))
+        monkeypatch.chdir(tmp_path)
+        result = CliRunner().invoke(main, ["init"])
+        assert result.exit_code == 0, result.output
+
+        written = yaml.safe_load((tmp_path / ".evie" / "brains.yaml").read_text())
+        assert not written, "init must write an empty override file, not a copy"
+
+    def test_defaults_reach_a_freshly_initialised_user(self, tmp_path, monkeypatch):
+        from click.testing import CliRunner
+
+        from evie.cli import main
+
+        monkeypatch.setenv("EVIE_HOME", str(tmp_path / ".evie"))
+        monkeypatch.setenv("HOME", str(tmp_path))
+        monkeypatch.chdir(tmp_path)
+        CliRunner().invoke(main, ["init"])
+
+        reg = load_registry()
+        assert reg.active == "groq", "should track the shipped default"
+        assert "openrouter" in reg.names()
+
+
+class TestOverrideWrites:
+    """Commands that change config must write to the user's file.
+
+    With no ~/.evie/brains.yaml, the old code resolved to whichever config it
+    found first and wrote there -- which is evie/defaults/brains.yaml inside
+    the repo. That shows up in `git status` and is overwritten by the next
+    pull.
+    """
+
+    def _run(self, args, tmp_path, monkeypatch):
+        from click.testing import CliRunner
+
+        from evie.cli import main
+
+        monkeypatch.setenv("EVIE_HOME", str(tmp_path / ".evie"))
+        monkeypatch.chdir(tmp_path)
+        return CliRunner().invoke(main, args)
+
+    def _shipped(self):
+        from evie.config import PACKAGE_DEFAULTS
+
+        return (PACKAGE_DEFAULTS / "brains.yaml").read_text()
+
+    def test_use_never_touches_the_shipped_config(self, tmp_path, monkeypatch):
+        before = self._shipped()
+        result = self._run(["brains", "use", "claude"], tmp_path, monkeypatch)
+        assert result.exit_code == 0, result.output
+        assert self._shipped() == before, "wrote into the package defaults"
+
+    def test_use_creates_the_override_file(self, tmp_path, monkeypatch):
+        import yaml
+
+        self._run(["brains", "use", "claude"], tmp_path, monkeypatch)
+        written = yaml.safe_load((tmp_path / ".evie" / "brains.yaml").read_text())
+        assert written["default"] == "claude"
+
+    def test_disable_then_enable_round_trips(self, tmp_path, monkeypatch):
+        from evie.config import load_registry
+
+        assert self._run(
+            ["brains", "disable", "gemini_cli"], tmp_path, monkeypatch
+        ).exit_code == 0
+        monkeypatch.setenv("EVIE_HOME", str(tmp_path / ".evie"))
+        monkeypatch.chdir(tmp_path)
+        assert "gemini_cli" not in load_registry().names()
+
+        assert self._run(
+            ["brains", "enable", "gemini_cli"], tmp_path, monkeypatch
+        ).exit_code == 0
+        assert "gemini_cli" in load_registry().names()
+
+    def test_enable_works_on_a_brain_the_registry_cannot_see(
+        self, tmp_path, monkeypatch
+    ):
+        """A disabled brain is absent from the merged registry, so resolving
+        against the live one would make the disable irreversible."""
+        self._run(["brains", "disable", "groq"], tmp_path, monkeypatch)
+        result = self._run(["brains", "enable", "groq"], tmp_path, monkeypatch)
+        assert result.exit_code == 0, result.output
+
+    def test_enable_rejects_an_unknown_name_with_the_list(self, tmp_path, monkeypatch):
+        result = self._run(["brains", "enable", "nonsense"], tmp_path, monkeypatch)
+        assert result.exit_code != 0
+        # The error goes to stderr, which is where errors belong; Click keeps
+        # the streams separate, so check both.
+        printed = result.output + (result.stderr or "")
+        assert "groq" in printed, "should name what is actually available"
+
+    def test_disable_survives_a_later_use(self, tmp_path, monkeypatch):
+        """Two edits to the same file must not clobber each other."""
+        import yaml
+
+        self._run(["brains", "disable", "gemini_cli"], tmp_path, monkeypatch)
+        self._run(["brains", "use", "claude"], tmp_path, monkeypatch)
+        written = yaml.safe_load((tmp_path / ".evie" / "brains.yaml").read_text())
+        assert written["default"] == "claude"
+        assert written["brains"]["gemini_cli"]["enabled"] is False
+
+
+class TestShippedModelIds:
+    """Two shipped model ids were retired underneath us in two days.
+
+    gemini-2.5-flash went first, then deepseek/deepseek-chat-v3.1:free, both
+    mid-conversation, both as a 404 the user had to decode. Nothing here can
+    stop a provider retiring a model, but it can stop us shipping one we
+    already know is gone.
+    """
+
+    def _brains(self):
+        import yaml
+
+        from evie.config import PACKAGE_DEFAULTS
+
+        return yaml.safe_load((PACKAGE_DEFAULTS / "brains.yaml").read_text())["brains"]
+
+    def test_openrouter_points_at_the_router_not_a_single_free_slug(self):
+        """OpenRouter's free roster turns over constantly. `openrouter/free`
+        picks from whatever is free at the time, so it cannot go stale the
+        way a pinned `:free` slug does."""
+        assert self._brains()["openrouter"]["model"] == "openrouter/free"
+
+    def test_no_known_retired_model_is_shipped(self):
+        retired = {
+            "gemini-2.5-flash",                  # 404 for new users, Sep 2026
+            "deepseek/deepseek-chat-v3.1:free",  # paid-only, Sep 2026
+        }
+        shipped = {spec.get("model") for spec in self._brains().values()}
+        assert not (shipped & retired), f"retired model still shipped: {shipped & retired}"
+
+    def test_grok_resolves_to_groq(self):
+        """The most common mishearing in the whole system. Prefix matching
+        cannot reach it -- a substituted final letter is not a prefix -- and
+        edit distance was rejected because it sends "clod" to Ollama Cloud."""
+        from evie.config import PACKAGE_DEFAULTS
+
+        reg = load_registry(PACKAGE_DEFAULTS / "brains.yaml")
+        assert reg.resolve("grok") == "groq"
+
+    def test_every_shipped_brain_can_say_what_it_is(self):
+        """`describe()` is injected into the system prompt each turn, so a
+        brain that cannot answer leaves a model guessing -- which is how
+        gpt-oss-120b came to call itself GPT-4."""
+        from evie.config import PACKAGE_DEFAULTS
+
+        reg = load_registry(PACKAGE_DEFAULTS / "brains.yaml")
+        for name in reg.names():
+            said = reg.describe(name)
+            assert said and said != name, f"{name} has no description"
+
+
+class TestCoreInstallStaysLight:
+    """Every module must import with only the four core dependencies.
+
+    The voice stack -- sounddevice, kokoro_onnx, faster_whisper, pynput --
+    lives behind lazy imports inside the functions that need them, which is
+    what lets the brain layer be installed and tested anywhere, CI included.
+    Nothing enforced it, and nothing would have: `evie.loop` is never imported
+    by any other test, so a module-level `import sounddevice` there would pass
+    the whole suite and only break on someone's fresh core-only install.
+
+    Like the shipped-config and credential checks above, this is a property of
+    what the package *is*, invisible to any test that exercises its behaviour.
+    """
+
+    HEAVY = ("sounddevice", "kokoro_onnx", "faster_whisper", "pynput",
+             "numpy", "soundfile", "onnxruntime")
+
+    def _modules(self):
+        import pkgutil
+
+        import evie
+
+        return [
+            name
+            for _, name, _ in pkgutil.walk_packages(evie.__path__, "evie.")
+        ]
+
+    def test_every_module_imports_without_the_voice_extra(self):
+        """Run in a subprocess with the voice packages blocked, so this holds
+        even in a dev environment that happens to have them installed."""
+        import subprocess
+        import sys
+        import textwrap
+
+        script = textwrap.dedent(f"""
+            import sys, pkgutil, importlib
+
+            class Refuse:
+                def find_module(self, name, path=None):
+                    return self.find_spec(name, path)
+
+                def find_spec(self, name, path=None, target=None):
+                    if name.split(".")[0] in {self.HEAVY!r}:
+                        raise ImportError(
+                            f"{{name}} is a voice extra and must not be "
+                            f"imported at module level"
+                        )
+                    return None
+
+            sys.meta_path.insert(0, Refuse())
+
+            import evie
+            for _, name, _ in pkgutil.walk_packages(evie.__path__, "evie."):
+                importlib.import_module(name)
+            print("ok")
+        """)
+        done = subprocess.run(
+            [sys.executable, "-c", script], capture_output=True, text=True
+        )
+        assert done.returncode == 0, (
+            "a module-level import of a voice extra crept in:\n" + done.stderr[-1500:]
+        )
+
+    def test_the_guard_itself_catches_a_real_violation(self):
+        """A guard nobody has seen fail is a guard nobody should trust."""
+        import subprocess
+        import sys
+
+        script = (
+            "import sys\n"
+            "class Refuse:\n"
+            "    def find_spec(self, name, path=None, target=None):\n"
+            "        if name.split('.')[0] == 'sounddevice':\n"
+            "            raise ImportError('blocked')\n"
+            "        return None\n"
+            "sys.meta_path.insert(0, Refuse())\n"
+            "import sounddevice\n"
+        )
+        done = subprocess.run(
+            [sys.executable, "-c", script], capture_output=True, text=True
+        )
+        assert done.returncode != 0 and "blocked" in done.stderr
+
+    def test_the_walk_actually_reaches_the_audio_modules(self):
+        """If the module list were empty or shallow the check above would
+        pass vacuously."""
+        found = self._modules()
+        for expected in ("evie.loop", "evie.audio.capture", "evie.voice.kokoro",
+                         "evie.ears.stt"):
+            assert expected in found, f"{expected} not walked; found {found}"

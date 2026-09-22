@@ -74,8 +74,11 @@ class VoiceLoop:
             loop = asyncio.get_running_loop()
 
             while True:
-                # Blocking mic read goes to a thread so the event loop stays free.
-                audio = await loop.run_in_executor(None, next, mic.utterances())
+                # The mic read goes to a thread so the event loop stays free, and
+                # returns empty-handed every quarter second so Ctrl-C can land.
+                audio = await loop.run_in_executor(None, mic.next_utterance)
+                if audio is None:
+                    continue
                 speaker.stop()  # pressing the key while she talks cuts her off
 
                 turn = time.perf_counter()

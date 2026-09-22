@@ -40,18 +40,81 @@ When a free tier runs dry, she walks the fallback chain and keeps going:
 
 ## Install
 
-Requires Python 3.11+ and a Mac (Apple Silicon recommended; Linux works, the
-audio permissions notes are macOS-specific).
+A Mac (Apple Silicon recommended; Linux works, the macOS permission notes don't
+apply) and **Python 3.11 or newer**.
+
+That version floor is not a preference. The core of E.V.I.E. runs fine on 3.9 --
+all tests pass there -- but Kokoro needs `onnxruntime`, which only publishes
+wheels for cp311 and up. macOS ships Python 3.9, so you need a newer one, and
+`uv` is the least painful way to get it.
+
+**Run these one at a time.** Each has a checkpoint; don't move on without it.
+
+**1. Install `uv`** (skip if `uv --version` already works):
 
 ```bash
-git clone https://github.com/tripleb384/e.v.i.e && cd e.v.i.e
-uv venv && source .venv/bin/activate
-uv pip install -e '.[voice]'
+curl -LsSf https://astral.sh/uv/install.sh | sh
+```
 
+**2. Put it on your PATH.** The installer does *not* do this for the shell
+you're already in, and the next command just fails with `command not found`:
+
+```bash
+source $HOME/.local/bin/env
+```
+
+*Checkpoint:* `uv --version` prints a version.
+
+**3. Clone and create the environment:**
+
+```bash
+git clone https://github.com/TripleB384/E.V.I.E && cd E.V.I.E
+```
+
+```bash
+uv venv --python 3.12
+```
+
+```bash
+source .venv/bin/activate
+```
+
+*Checkpoint:* your prompt now starts with `(.venv)`.
+
+**4. Install.** Note `voice,dev` -- `dev` is what provides `pytest`, so
+installing only `[voice]` leaves you unable to run the tests:
+
+```bash
+uv pip install -e ".[voice,dev]"
+```
+
+Takes a minute or two; onnxruntime and the Whisper libraries are large.
+
+*Checkpoint:*
+
+```bash
+pytest
+```
+
+113 tests pass, with no hardware and no credentials.
+
+**5. Set up and go:**
+
+```bash
 evie init          # creates ~/.evie and your vault
-evie doctor --fix  # checks everything, downloads the voice model
+evie doctor --fix  # checks everything, downloads the voice model (~350MB)
 evie run           # hold Right Option and talk
 ```
+
+<details>
+<summary>Without <code>uv</code></summary>
+
+You need a Python 3.11+ from somewhere else -- `brew install python@3.12`, or
+python.org. Then `python3.12 -m venv .venv && source .venv/bin/activate &&
+pip install -e ".[voice,dev]"`. Stock macOS Python 3.9 will not work for the
+voice stack, for the onnxruntime reason above.
+
+</details>
 
 ### Authenticating brains
 
@@ -68,6 +131,29 @@ brain authenticates itself, the same way you'd use it from a terminal:
 
 Turn a brain on by setting `enabled: true` in `brains.yaml`.
 
+### Where keys live
+
+**In your environment, and nowhere else.** `brains.yaml` records the *name* of
+an environment variable, never its value:
+
+```yaml
+api_key_env: GROQ_API_KEY    # the name -- safe to commit
+```
+
+E.V.I.E. reads `os.environ` at call time and never writes a credential to disk.
+That is what makes this config publishable, and it is enforced by a test:
+`TestRepoHygiene` scans every tracked file for credential shapes on each run.
+
+Put your keys in `~/.zshrc` so they persist across terminals:
+
+```bash
+echo 'export GROQ_API_KEY=your_key_here' >> ~/.zshrc
+```
+
+If a key ever reaches a chat, a screenshot, or a commit, rotate it rather than
+assessing the blast radius — all of these providers issue free replacements in
+about a minute.
+
 ## Using it
 
 ```bash
@@ -76,8 +162,26 @@ evie ask "..."           # text only — isolates the brain path
 evie say "testing"       # audio only — isolates the TTS path
 evie brains list         # health + today's usage for every brain
 evie brains use gemini   # change the default
+evie brains test         # make real calls — does any of this actually work?
 evie doctor              # what's missing and how to fix it
 ```
+
+`brains list` is cheap and optimistic: it pings `/models` or looks for a
+binary, so a CLI that is installed but not logged in still shows green.
+`brains test` is the one that asks for real. It runs an actual inference on
+every brain, hands each provider a deliberately invalid key to check that a
+rejection is survivable rather than fatal, forces the head of the fallback
+chain to fail and confirms the next brain picks up, and replays the voice
+switch commands to confirm they still cost no model call.
+
+```bash
+evie brains test --only switch   # needs no keys and no network
+evie brains test --skip claude   # leave out the slow, plan-spending one
+```
+
+Roughly one request per brain, so it is nearly free — except `claude`, which
+boots a whole Claude Code session per call (5–11s). It exits non-zero on any
+failure.
 
 Say these to her and no model is ever called — the swap is instant and free:
 
@@ -138,7 +242,7 @@ Target budget, visible in `evie run --debug`:
 ## Development
 
 ```bash
-uv pip install -e '.[dev]'
+uv pip install -e ".[voice,dev]"
 pytest                                  # no audio hardware needed
 evie ask "hello" --brain echo           # end-to-end with no model at all
 ```

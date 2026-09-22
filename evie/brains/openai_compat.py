@@ -12,8 +12,10 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from dataclasses import dataclass
 from typing import AsyncIterator
+from urllib.parse import urlparse
 
 import httpx
 
@@ -98,10 +100,40 @@ class OpenAICompatBrain:
                             text = (choice.get("delta") or {}).get("content")
                             if text:
                                 yield text
-        except httpx.ConnectError as exc:
-            raise BrainUnavailable(f"cannot reach {self.spec.base_url}: {exc}") from exc
         except httpx.TimeoutException as exc:
             raise BrainUnavailable(f"{self.name} timed out") from exc
+        except httpx.ConnectError as exc:
+            raise BrainUnavailable(f"cannot reach {self.spec.base_url}: {exc}") from exc
+        except httpx.TransportError as exc:
+            # Everything else that means "the bytes did not get through":
+            # a proxy refusing (ProxyError), the connection dropping
+            # mid-answer (ReadError, RemoteProtocolError), a malformed
+            # base_url (UnsupportedProtocol).
+            #
+            # Catching only ConnectError and TimeoutException left these
+            # escaping as raw httpx errors, which are not BrainError -- so
+            # the registry's `except BrainError` never saw them and the whole
+            # turn died with a traceback instead of moving to the next brain.
+            # Found by `evie brains test`: a 403 from an egress proxy took out
+            # four brains at once, and dropped wifi mid-stream does the same.
+            raise BrainUnavailable(
+                f"{self.name} unreachable ({type(exc).__name__}: {exc})"
+            ) from exc
+
+    def describe(self) -> str:
+        """Model id and provider host, for telling a brain who it is.
+
+        A model asked what it is answers from its training data, which is
+        about the weights and not about this deployment -- one real session
+        had gpt-oss-120b on Groq insisting three times that it was GPT-4.
+        """
+        host = urlparse(self.spec.base_url).hostname or self.spec.base_url
+        return f"the {self.spec.model} model, served by {host}"
+
+    def missing(self) -> str | None:
+        if self.spec.api_key_env and not self._key:
+            return f"${self.spec.api_key_env} is not set"
+        return None
 
     async def health(self) -> BrainStatus:
         if self.spec.api_key_env and not self._key:
@@ -122,12 +154,91 @@ class OpenAICompatBrain:
         return BrainStatus(Health.OK, self.spec.model)
 
 
+# Providers disagree about which status an invalid key deserves. Google
+# returns 400 ("Please pass a valid API key"), most others 401. Classifying on
+# the status alone made a bad Google key a BrainRefused -- fatal, no fallback
+# -- so one wrong credential killed a request the chain could have answered.
+# Two independent signals, checked in either order, because providers phrase
+# this every possible way: Google says "Please pass a valid API key" (problem
+# word first), most others say "invalid api key" (noun first). Requiring a
+# fixed order missed Google entirely.
+#
+# Bare "token" is deliberately excluded from the nouns: "max_tokens is
+# required" would otherwise read as an auth failure.
+_AUTH_NOUN = re.compile(
+    r"\b(?:api[ _-]?key|credential|authenticat\w+|authori[sz]\w+|"
+    r"(?:access|bearer|auth)[ _-]token)\b",
+    re.IGNORECASE,
+)
+_AUTH_PROBLEM = re.compile(
+    r"\b(?:invalid|valid|expired|missing|required|incorrect|bad|malformed|"
+    r"unauthori[sz]ed|rejected|denied|forbidden|provide|pass)\b",
+    re.IGNORECASE,
+)
+_MODEL_TROUBLE = re.compile(
+    r"\bmodel\b[^.]{0,80}?"
+    r"\b(?:not found|no longer|unavailable|does not exist|doesn'?t exist|"
+    r"deprecated|retired|unsupported|invalid|unknown|decommissioned)\b"
+    r"|\b(?:unknown|invalid|unsupported|no such)\b[^.]{0,20}?\bmodel\b",
+    re.IGNORECASE,
+)
+# The account is refused, rather than the credential. Checked before the
+# key-rejection branch, because Google returns this as a plain 403 and the
+# advice for the two cases is opposite: one says check your key, the other
+# says your key is fine.
+_ACCOUNT_BLOCKED = re.compile(
+    r"\bpermission[ _-]?denied\b"
+    r"|\b(?:project|account|organi[sz]ation|workspace)\b[^.]{0,60}?"
+    r"\b(?:denied|blocked|suspended|disabled|not\s+(?:enabled|authori[sz]ed)|"
+    r"does\s+not\s+have\s+access|has\s+been\s+deactivated)\b"
+    r"|\b(?:denied|blocked|suspended)\s+access\b",
+    re.IGNORECASE,
+)
+_QUOTA_TROUBLE = re.compile(
+    r"\b(?:quota|rate.?limit|exhausted|too many requests|billing|"
+    r"insufficient.{0,20}(?:credit|balance|fund))\b",
+    re.IGNORECASE,
+)
+
+
 def _from_status(status: int, body: str) -> Exception:
     snippet = body.strip()[:400]
-    if status == 429:
-        return BrainExhausted(f"rate limited: {snippet}")
-    if status in (401, 403):
-        return BrainUnavailable(f"auth rejected: {snippet}")
+
+    if status == 429 or _QUOTA_TROUBLE.search(body):
+        return BrainExhausted(f"out of quota: {snippet}")
+
+    if _ACCOUNT_BLOCKED.search(body):
+        # Not a credential problem, and telling someone to re-check a key
+        # that is perfectly fine wastes their afternoon. Google answers
+        # `403 PERMISSION_DENIED: Your project has been denied access` when
+        # the project itself is blocked -- the key is valid and irrelevant.
+        return BrainUnavailable(
+            f"this provider is refusing the account, not the key — the "
+            f"credential is fine, the project or plan behind it is not. "
+            f"Sort it out with the provider, or run "
+            f"`evie brains disable <name>` to take it out of the rotation. "
+            f"Provider said: {snippet}"
+        )
+
+    if status in (401, 403) or (_AUTH_NOUN.search(body) and _AUTH_PROBLEM.search(body)):
+        # Worth being specific: the provider's own wording does not
+        # distinguish a typo from an expired key from one pasted into the
+        # wrong variable, and all three look identical from here.
+        return BrainUnavailable(
+            f"the API key was rejected — check it is the right provider's key, "
+            f"has no stray quotes or spaces, and has not expired. "
+            f"Provider said: {snippet}"
+        )
+
+    if status == 404 or _MODEL_TROUBLE.search(body):
+        # Per-provider configuration, not a bad request. Google retiring
+        # gemini-2.5-flash says nothing about whether Groq can answer, so
+        # ending the turn here wastes a working fallback chain.
+        return BrainUnavailable(
+            f"this provider will not serve that model — update `model:` for "
+            f"this brain in brains.yaml. Provider said: {snippet}"
+        )
+
     return BrainRefused(f"HTTP {status}: {snippet}")
 
 

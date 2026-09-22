@@ -22,8 +22,15 @@ _ABBREVIATIONS = {
     "mr.", "mrs.", "ms.", "dr.", "prof.", "st.", "vs.", "etc.", "e.g.", "i.e.",
     "fig.", "approx.", "no.", "inc.", "jr.", "sr.", "a.m.", "p.m.", "u.s.",
 }
-_MIN_CHUNK = 12     # below this, keep buffering; a lone "Yes." sounds clipped
-_MAX_CHUNK = 320    # above this, cut at a word boundary rather than stall
+# A pause a speaker would actually take: after a comma, semicolon or colon,
+# or before a spaced dash. Sentences are not the only place speech breathes,
+# and waiting for a full stop can mean waiting for the whole answer.
+_CLAUSE_END = re.compile(r"(?<=[,;:])(?=\s)|(?=\s[—–]\s)")
+
+_MIN_CHUNK = 12      # below this, keep buffering; a lone "Yes." sounds clipped
+_FIRST_CHUNK = 40    # the first phrase goes out early: it sets perceived latency
+_CLAUSE_CHUNK = 130  # after that, prefer longer runs so the delivery isn't choppy
+_MAX_CHUNK = 320     # hard cap: cut at a word boundary rather than stall
 
 
 def _ends_on_abbreviation(text: str) -> bool:
@@ -47,6 +54,21 @@ def split_sentences(buffer: str) -> tuple[list[str], str]:
     return out, buffer[cursor:]
 
 
+def split_clause(buffer: str, min_len: int) -> tuple[str | None, str]:
+    """Take the earliest natural pause at or after `min_len` characters.
+
+    Without this, a reply that runs to a single sentence -- which spoken
+    answers very often do -- buffers completely before a word is heard. One
+    real measurement: first token at 5.4s, first audio at 13.4s, eight seconds
+    of silence while a 192-character answer with no full stop accumulated.
+    """
+    for match in _CLAUSE_END.finditer(buffer):
+        head = buffer[: match.end()]
+        if len(head.strip()) >= min_len:
+            return head.strip(), buffer[match.end() :]
+    return None, buffer
+
+
 def cut_long(buffer: str) -> tuple[list[str], str]:
     """Break an over-long unpunctuated buffer at word boundaries.
 
@@ -66,16 +88,40 @@ def cut_long(buffer: str) -> tuple[list[str], str]:
 
 
 async def speakable(chunks: AsyncIterator[str]) -> AsyncIterator[str]:
-    """Regroup a token stream into phrases a TTS engine can speak naturally."""
+    """Regroup a token stream into phrases a TTS engine can speak naturally.
+
+    Three escalating ways to decide a phrase is ready, in order of preference:
+    a sentence ending, a clause pause, and a hard length cap. The first phrase
+    uses a much lower threshold than the rest, because the wait before she
+    starts talking is the only latency anyone notices.
+    """
     buffer = ""
+    spoken_yet = False
+
     async for chunk in chunks:
         buffer += chunk
+
         sentences, buffer = split_sentences(buffer)
         for sentence in sentences:
+            spoken_yet = True
             yield sentence
+
+        # Long sentences still need somewhere to breathe.
+        while True:
+            clause, rest = split_clause(
+                buffer, _FIRST_CHUNK if not spoken_yet else _CLAUSE_CHUNK
+            )
+            if clause is None:
+                break
+            buffer = rest
+            spoken_yet = True
+            yield clause
+
         forced, buffer = cut_long(buffer)
         for phrase in forced:
+            spoken_yet = True
             yield phrase
+
     if buffer.strip():
         yield buffer.strip()
 
@@ -100,6 +146,8 @@ def for_speech(text: str) -> str:
     text = _HEADING.sub("", text)
     text = _BULLET.sub("", text)
     text = _EMPHASIS.sub(r"\2", text)
+    text = re.sub(r"\s[—–]\s", ", ", text)       # a spoken pause, not a spoken dash
+    text = re.sub(r"^[\s—–,;:]+", "", text)       # never open a phrase on punctuation
     return re.sub(r"[ \t]+", " ", text).strip()
 
 

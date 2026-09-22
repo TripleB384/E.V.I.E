@@ -1,3 +1,3 @@
-from .vault import Vault
+from .vault import GitError, Vault, VaultGit, check_remote, stats
 
-__all__ = ["Vault"]
+__all__ = ["GitError", "Vault", "VaultGit", "check_remote", "stats"]
