@@ -395,6 +395,111 @@ def brains_enable(name: str) -> None:
     console.print(f"  [dim]{path}[/]")
 
 
+PHASES = ("switch", "classify", "chain", "reach")
+
+
+
+@brains.command("test")
+@click.option("--only", type=click.Choice(PHASES), default=None,
+              help="Run one check. `switch` needs no keys and no network.")
+@click.option("--brain", "one", default=None,
+              help="Test one brain: its reach and how its provider rejects a bad key.")
+@click.option("--skip", multiple=True, help="Leave a brain out. Repeatable.")
+@click.option("--deep", is_flag=True,
+              help="Walk every position in the fallback chain, not just the head.")
+def brains_test(only: str | None, one: str | None, skip: tuple[str, ...], deep: bool) -> None:
+    """Make real calls and check the brains, the chain and switching.
+
+    Unlike `brains list`, which only pings /models or looks for a binary, this
+    runs an actual inference on every brain -- roughly one request each. Cheap
+    everywhere except `claude`, which boots a whole Claude Code session per
+    call: 5-11s and real plan allowance. `--skip claude` leaves it out.
+    """
+    from .config import PACKAGE_DEFAULTS, load_registry
+    from . import selftest
+
+    try:
+        registry = load_registry()
+    except Exception as exc:
+        _fail(str(exc))
+
+    for name in (*skip, *( [one] if one else [] )):
+        try:
+            registry.resolve(name)
+        except Exception as exc:
+            _fail(str(exc), "Run `evie brains list` to see what is configured.")
+
+    if only:
+        wanted = [only]
+    elif one:
+        # `switch` and `chain` are properties of the whole roster, not of one
+        # brain, so naming a brain means the two checks that are about it.
+        wanted = ["classify", "reach"]
+    else:
+        wanted = list(PHASES)
+    results: list = []
+
+    async def go() -> None:
+        if "switch" in wanted:
+            results.extend(
+                selftest.switching(lambda: load_registry(PACKAGE_DEFAULTS / "brains.yaml"))
+            )
+        if "classify" in wanted:
+            results.extend(await selftest.classify(registry, only=one, skip=skip))
+        if "chain" in wanted:
+            results.extend(await selftest.chain(registry, deep=deep, skip=skip))
+        if "reach" in wanted:
+            results.extend(await selftest.reach(registry, only=one, skip=skip))
+
+    titles = {
+        "switch": "switching — is a brain swap still free?",
+        "classify": "classify — is a real provider rejection survivable?",
+        "chain": "chain — does she move on when a brain gives out?",
+        "reach": "reach — can every brain actually answer?",
+    }
+
+    try:
+        asyncio.run(go())
+    except Exception as exc:
+        _fail(str(exc))
+
+    for phase in wanted:
+        rows = [r for r in results if r.phase == phase]
+        if not rows:
+            continue
+        table = Table(title=titles[phase], header_style="bold", title_justify="left")
+        table.add_column("")
+        table.add_column("what")
+        table.add_column("result")
+        table.add_column("took", justify="right")
+        for r in rows:
+            mark = "[dim]–[/]" if r.skipped else ("[green]✓[/]" if r.ok else "[red]✗[/]")
+            style = "dim" if r.skipped else ("" if r.ok else "red")
+            table.add_row(
+                mark,
+                escape(r.name),
+                f"[{style}]{escape(r.detail)}[/]" if style else escape(r.detail),
+                f"{r.seconds:.1f}s" if r.seconds else "",
+            )
+        console.print(table)
+        console.print()
+
+    bad = selftest.failures(results)
+    passed = sum(1 for r in results if r.ok and not r.skipped)
+    skipped = sum(1 for r in results if r.skipped)
+    summary = f"{passed} passed, {len(bad)} failed"
+    if skipped:
+        summary += f", {skipped} skipped [dim](not configured, or not testable here)[/]"
+
+    if bad:
+        console.print(f"[red]{summary}[/]")
+        console.print("\n[dim]A brain green in `brains list` and red here means the "
+                      "health check is overstating readiness — it never ran an "
+                      "inference.[/]")
+        sys.exit(1)
+    console.print(f"[green]{summary}[/]")
+
+
 # -- memory --------------------------------------------------------------
 
 

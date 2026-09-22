@@ -95,13 +95,24 @@ class CliBrain:
         if cwd and not os.path.isdir(cwd):
             os.makedirs(cwd, exist_ok=True)
 
-        proc = await asyncio.create_subprocess_exec(
-            *argv,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            cwd=cwd,
-            env=env,
-        )
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                *argv,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                cwd=cwd,
+                env=env,
+            )
+        except OSError as exc:
+            # The `which` above is not a guarantee: a broken symlink, a file
+            # without the execute bit, or an upgrade swapping the binary out
+            # between the check and the spawn all land here. Raw OSError is
+            # not a BrainError, so the registry would not catch it and the
+            # turn would die rather than move to the next brain.
+            raise BrainUnavailable(
+                f"could not start {self.spec.command[0]!r} "
+                f"({type(exc).__name__}: {exc})"
+            ) from exc
 
         parse = (
             self._parse_claude_stream_json

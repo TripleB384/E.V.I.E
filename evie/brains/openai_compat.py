@@ -100,10 +100,25 @@ class OpenAICompatBrain:
                             text = (choice.get("delta") or {}).get("content")
                             if text:
                                 yield text
-        except httpx.ConnectError as exc:
-            raise BrainUnavailable(f"cannot reach {self.spec.base_url}: {exc}") from exc
         except httpx.TimeoutException as exc:
             raise BrainUnavailable(f"{self.name} timed out") from exc
+        except httpx.ConnectError as exc:
+            raise BrainUnavailable(f"cannot reach {self.spec.base_url}: {exc}") from exc
+        except httpx.TransportError as exc:
+            # Everything else that means "the bytes did not get through":
+            # a proxy refusing (ProxyError), the connection dropping
+            # mid-answer (ReadError, RemoteProtocolError), a malformed
+            # base_url (UnsupportedProtocol).
+            #
+            # Catching only ConnectError and TimeoutException left these
+            # escaping as raw httpx errors, which are not BrainError -- so
+            # the registry's `except BrainError` never saw them and the whole
+            # turn died with a traceback instead of moving to the next brain.
+            # Found by `evie brains test`: a 403 from an egress proxy took out
+            # four brains at once, and dropped wifi mid-stream does the same.
+            raise BrainUnavailable(
+                f"{self.name} unreachable ({type(exc).__name__}: {exc})"
+            ) from exc
 
     def describe(self) -> str:
         """Model id and provider host, for telling a brain who it is.

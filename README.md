@@ -162,8 +162,26 @@ evie ask "..."           # text only — isolates the brain path
 evie say "testing"       # audio only — isolates the TTS path
 evie brains list         # health + today's usage for every brain
 evie brains use gemini   # change the default
+evie brains test         # make real calls — does any of this actually work?
 evie doctor              # what's missing and how to fix it
 ```
+
+`brains list` is cheap and optimistic: it pings `/models` or looks for a
+binary, so a CLI that is installed but not logged in still shows green.
+`brains test` is the one that asks for real. It runs an actual inference on
+every brain, hands each provider a deliberately invalid key to check that a
+rejection is survivable rather than fatal, forces the head of the fallback
+chain to fail and confirms the next brain picks up, and replays the voice
+switch commands to confirm they still cost no model call.
+
+```bash
+evie brains test --only switch   # needs no keys and no network
+evie brains test --skip claude   # leave out the slow, plan-spending one
+```
+
+Roughly one request per brain, so it is nearly free — except `claude`, which
+boots a whole Claude Code session per call (5–11s). It exits non-zero on any
+failure.
 
 Say these to her and no model is ever called — the swap is instant and free:
 

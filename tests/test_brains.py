@@ -431,3 +431,102 @@ class TestDescribe:
                 raise NotImplementedError
 
         assert registry(old=Older()).describe("old") == "old"
+
+
+class TestTransportFailuresAreSurvivable:
+    """A failure to get the bytes through must be a BrainError, not a raw one.
+
+    `registry.stream()` only catches `BrainError`. Anything else escapes the
+    fallback loop entirely, so the turn dies with a traceback while four
+    working brains sit untouched behind it.
+
+    Found by `evie brains test`: a 403 from an egress proxy took out four
+    brains at once. `stream()` was catching only `ConnectError` and
+    `TimeoutException`, which leaves ProxyError, ReadError and
+    RemoteProtocolError — a dropped connection mid-answer — uncaught.
+    """
+
+    import pytest as _pytest
+
+    @_pytest.mark.parametrize(
+        "error",
+        [
+            "ProxyError",           # any proxy, corporate or otherwise
+            "ReadError",            # connection dropped mid-stream
+            "RemoteProtocolError",  # server hung up
+            "UnsupportedProtocol",  # a malformed base_url in brains.yaml
+            "ConnectError",
+        ],
+    )
+    async def test_an_http_transport_error_is_a_brain_error(self, monkeypatch, error):
+        import httpx
+
+        from evie.brains import BrainError, HttpBrainSpec, OpenAICompatBrain
+
+        raised = getattr(httpx, error)("nope")
+
+        class Boom:
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *a):
+                return False
+
+            def stream(self, *a, **kw):
+                raise raised
+
+        monkeypatch.setattr(httpx, "AsyncClient", lambda **kw: Boom())
+        brain = OpenAICompatBrain(HttpBrainSpec("p", "https://x.invalid/v1", "m"))
+
+        with pytest.raises(BrainError) as exc:
+            async for _ in brain.stream("hi", Context()):
+                pass
+        assert exc.value.retryable_elsewhere, "the chain must be allowed to move on"
+
+    async def test_the_chain_survives_a_proxy_error(self, monkeypatch):
+        """The payoff: the whole point of classifying it correctly."""
+        import httpx
+
+        from evie.brains import HttpBrainSpec, OpenAICompatBrain
+
+        class Boom:
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *a):
+                return False
+
+            def stream(self, *a, **kw):
+                raise httpx.ProxyError("403 Forbidden")
+
+        monkeypatch.setattr(httpx, "AsyncClient", lambda **kw: Boom())
+        reg = registry(
+            blocked=OpenAICompatBrain(HttpBrainSpec("blocked", "https://x.invalid/v1", "m")),
+            backup=FakeBrain("backup", text="Still here."),
+            default="blocked",
+            fallback=["blocked", "backup"],
+        )
+        text, notices = await collect(reg)
+        assert text.strip() == "Still here."
+        assert notices and "blocked" in notices[0]
+
+    async def test_a_cli_that_cannot_be_spawned_is_a_brain_error(self, monkeypatch):
+        """`shutil.which` is not a guarantee: a broken symlink, a missing
+        execute bit, or an upgrade swapping the binary between the check and
+        the spawn all raise OSError, which is not a BrainError."""
+        import asyncio as _asyncio
+
+        from evie.brains import BrainUnavailable, CliBrain, CliBrainSpec
+
+        monkeypatch.setattr("shutil.which", lambda exe: "/usr/bin/" + exe)
+
+        async def cannot_spawn(*a, **kw):
+            raise PermissionError(13, "Permission denied")
+
+        monkeypatch.setattr(_asyncio, "create_subprocess_exec", cannot_spawn)
+        brain = CliBrain(CliBrainSpec("c", ["nope", "{prompt}"]))
+
+        with pytest.raises(BrainUnavailable) as exc:
+            async for _ in brain.stream("hi", Context()):
+                pass
+        assert "Permission denied" in str(exc.value)
