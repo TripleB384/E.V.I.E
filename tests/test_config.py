@@ -613,3 +613,95 @@ class TestShippedModelIds:
         for name in reg.names():
             said = reg.describe(name)
             assert said and said != name, f"{name} has no description"
+
+
+class TestCoreInstallStaysLight:
+    """Every module must import with only the four core dependencies.
+
+    The voice stack -- sounddevice, kokoro_onnx, faster_whisper, pynput --
+    lives behind lazy imports inside the functions that need them, which is
+    what lets the brain layer be installed and tested anywhere, CI included.
+    Nothing enforced it, and nothing would have: `evie.loop` is never imported
+    by any other test, so a module-level `import sounddevice` there would pass
+    the whole suite and only break on someone's fresh core-only install.
+
+    Like the shipped-config and credential checks above, this is a property of
+    what the package *is*, invisible to any test that exercises its behaviour.
+    """
+
+    HEAVY = ("sounddevice", "kokoro_onnx", "faster_whisper", "pynput",
+             "numpy", "soundfile", "onnxruntime")
+
+    def _modules(self):
+        import pkgutil
+
+        import evie
+
+        return [
+            name
+            for _, name, _ in pkgutil.walk_packages(evie.__path__, "evie.")
+        ]
+
+    def test_every_module_imports_without_the_voice_extra(self):
+        """Run in a subprocess with the voice packages blocked, so this holds
+        even in a dev environment that happens to have them installed."""
+        import subprocess
+        import sys
+        import textwrap
+
+        script = textwrap.dedent(f"""
+            import sys, pkgutil, importlib
+
+            class Refuse:
+                def find_module(self, name, path=None):
+                    return self.find_spec(name, path)
+
+                def find_spec(self, name, path=None, target=None):
+                    if name.split(".")[0] in {self.HEAVY!r}:
+                        raise ImportError(
+                            f"{{name}} is a voice extra and must not be "
+                            f"imported at module level"
+                        )
+                    return None
+
+            sys.meta_path.insert(0, Refuse())
+
+            import evie
+            for _, name, _ in pkgutil.walk_packages(evie.__path__, "evie."):
+                importlib.import_module(name)
+            print("ok")
+        """)
+        done = subprocess.run(
+            [sys.executable, "-c", script], capture_output=True, text=True
+        )
+        assert done.returncode == 0, (
+            "a module-level import of a voice extra crept in:\n" + done.stderr[-1500:]
+        )
+
+    def test_the_guard_itself_catches_a_real_violation(self):
+        """A guard nobody has seen fail is a guard nobody should trust."""
+        import subprocess
+        import sys
+
+        script = (
+            "import sys\n"
+            "class Refuse:\n"
+            "    def find_spec(self, name, path=None, target=None):\n"
+            "        if name.split('.')[0] == 'sounddevice':\n"
+            "            raise ImportError('blocked')\n"
+            "        return None\n"
+            "sys.meta_path.insert(0, Refuse())\n"
+            "import sounddevice\n"
+        )
+        done = subprocess.run(
+            [sys.executable, "-c", script], capture_output=True, text=True
+        )
+        assert done.returncode != 0 and "blocked" in done.stderr
+
+    def test_the_walk_actually_reaches_the_audio_modules(self):
+        """If the module list were empty or shallow the check above would
+        pass vacuously."""
+        found = self._modules()
+        for expected in ("evie.loop", "evie.audio.capture", "evie.voice.kokoro",
+                         "evie.ears.stt"):
+            assert expected in found, f"{expected} not walked; found {found}"

@@ -1,0 +1,59 @@
+name: CI
+
+# PR #1 merged with nothing gating it, and the twenty commits since were
+# verified only by hand. This is the cheapest way to stop that being true.
+on:
+  push:
+    branches: [main, dev]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # requires-python is >=3.11; the Mac this actually runs on is 3.12.
+        python: ["3.11", "3.12"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+
+      # Deliberately `.[dev]` and never `.[voice]`.
+      #
+      # Every heavy dependency -- sounddevice, kokoro_onnx, faster_whisper,
+      # pynput -- is imported lazily inside the function that needs it, so the
+      # whole suite runs on the four pure-Python core deps in seconds with no
+      # system audio libraries.
+      #
+      # Installing without the voice extra is not by itself what protects
+      # that: `evie.loop` is imported by no test, so a module-level
+      # `import sounddevice` there would sail straight through. The actual
+      # guard is TestCoreInstallStaysLight, which walks every module in the
+      # package and imports it with the voice packages blocked. Verified by
+      # planting the violation and watching it fail. This job is what makes
+      # that guard run on every push.
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e '.[dev]'
+
+      - name: Tests
+        run: pytest -q
+
+      # Needs no API key, no network and no model call -- it asserts that last
+      # part. The other three phases of `brains test` make real provider calls,
+      # so they stay out: putting credentials in a public repo's CI is exactly
+      # the exposure this project has been careful about.
+      #
+      # GITHUB_TOKEN is deliberately not passed through. Left unset, the
+      # `github` brain stays parked and nothing can spend it.
+      - name: Voice commands still cost nothing
+        run: evie brains test --only switch
