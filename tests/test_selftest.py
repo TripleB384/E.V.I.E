@@ -47,7 +47,12 @@ def http_brain(name, error=None, key_env="EVIE_TEST_KEY"):
 
 
 def only(results, name):
-    return next(r for r in results if r.name == name)
+    for r in results:
+        if r.name == name:
+            return r
+    # StopIteration out of an async test surfaces as an unrelated RuntimeError,
+    # which hides which row was actually missing.
+    raise AssertionError(f"no {name!r} row in {[r.name for r in results]}")
 
 
 # -- reach -----------------------------------------------------------------
@@ -169,7 +174,7 @@ class TestChain:
             default="a",
             fallback=["a", "b"],
         )
-        result = only(await selftest.chain(reg), "a → b")
+        result = only(await selftest.chain(reg), "a gives out")
         assert result.ok
         assert "rate limited" in result.detail
 
@@ -216,7 +221,7 @@ class TestChain:
             reg._active = "b"
 
         reg.stream = mute
-        assert only(await selftest.chain(reg), "a → b").failed
+        assert only(await selftest.chain(reg), "a gives out").failed
 
     async def test_deep_walks_every_position(self):
         reg = registry(
@@ -224,7 +229,7 @@ class TestChain:
             default="a", fallback=["a", "b", "c"],
         )
         labels = [r.name for r in await selftest.chain(reg, deep=True)]
-        assert "a → b" in labels and "b → c" in labels
+        assert "a gives out" in labels and "b gives out" in labels
 
 
 # -- switch ----------------------------------------------------------------
@@ -282,3 +287,88 @@ class TestFailures:
             selftest.Result("reach", "c", False, "broken"),
         ]
         assert [r.name for r in selftest.failures(results)] == ["c"]
+
+
+class TestChainAcceptsARealWalk:
+    """The first live run reported a failure when the chain had worked.
+
+    groq was forced to fail, gemini_api was genuinely 403'd, and openrouter
+    answered. Two brains down and still an answer is the design succeeding.
+    The assertion demanded the *next* brain specifically, and called it a
+    failure.
+    """
+
+    async def test_it_accepts_a_two_step_walk(self):
+        reg = registry(
+            a=FakeBrain("a"),
+            b=FakeBrain("b", fail=BrainUnavailable("403 denied")),
+            c=FakeBrain("c", text="from c"),
+            default="a",
+            fallback=["a", "b", "c"],
+        )
+        result = only(await selftest.chain(reg), "a gives out")
+        assert result.ok, result.detail
+        assert "a → b → c" in result.detail
+
+    async def test_a_skipped_brain_must_still_be_announced(self):
+        """Or a second failure passes unmentioned behind the first, and you
+        never learn that gemini has been dead for a week."""
+        reg = registry(
+            a=FakeBrain("a"),
+            b=FakeBrain("b", fail=BrainUnavailable("403")),
+            c=FakeBrain("c", text="from c"),
+            default="a",
+            fallback=["a", "b", "c"],
+        )
+
+        async def half_mute(prompt, ctx, *, brain=None):
+            yield "notice", "a is rate limited. Switching to b."
+            yield "text", "from c"
+            reg._active = "c"
+
+        reg.stream = half_mute
+        result = only(await selftest.chain(reg), "a gives out")
+        assert result.failed
+        assert "never told about b" in result.detail
+
+    async def test_landing_outside_the_chain_still_fails(self):
+        reg = registry(
+            a=FakeBrain("a"), b=FakeBrain("b"), default="a", fallback=["a", "b"]
+        )
+
+        async def wrong(prompt, ctx, *, brain=None):
+            yield "notice", "a is rate limited. Switching to b."
+            yield "text", "from somewhere"
+            reg._active = "a"
+
+        reg.stream = wrong
+        assert only(await selftest.chain(reg), "a gives out").failed
+
+
+class TestClassifyTellsEmptyFromAccepted:
+    """The first live run said `github` "accepted a deliberately invalid key".
+
+    That branch fired whenever no exception was raised and threw away what
+    came back, so a 200 carrying a real answer and a 200 carrying nothing
+    produced the same verdict — accusing the provider of something it had
+    probably not done.
+    """
+
+    async def test_text_back_means_the_key_really_was_accepted(self):
+        result = only(await selftest.classify(registry(p=http_brain("p", None))), "p")
+        assert result.failed
+        assert "accepted the junk key" in result.detail, "it should quote what came back"
+
+    async def test_nothing_back_is_reported_as_nothing_back(self):
+        class Silent(OpenAICompatBrain):
+            async def stream(self, prompt, ctx):
+                return
+                yield ""
+
+        reg = registry(
+            p=Silent(HttpBrainSpec("p", "https://x.invalid/v1", "m", api_key_env="K"))
+        )
+        result = only(await selftest.classify(reg), "p")
+        assert result.skipped, "the chain handles this; it is not E.V.I.E. misbehaving"
+        assert "no content" in result.detail
+        assert "accepted" not in result.detail

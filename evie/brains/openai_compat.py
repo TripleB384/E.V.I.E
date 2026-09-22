@@ -182,6 +182,18 @@ _MODEL_TROUBLE = re.compile(
     r"|\b(?:unknown|invalid|unsupported|no such)\b[^.]{0,20}?\bmodel\b",
     re.IGNORECASE,
 )
+# The account is refused, rather than the credential. Checked before the
+# key-rejection branch, because Google returns this as a plain 403 and the
+# advice for the two cases is opposite: one says check your key, the other
+# says your key is fine.
+_ACCOUNT_BLOCKED = re.compile(
+    r"\bpermission[ _-]?denied\b"
+    r"|\b(?:project|account|organi[sz]ation|workspace)\b[^.]{0,60}?"
+    r"\b(?:denied|blocked|suspended|disabled|not\s+(?:enabled|authori[sz]ed)|"
+    r"does\s+not\s+have\s+access|has\s+been\s+deactivated)\b"
+    r"|\b(?:denied|blocked|suspended)\s+access\b",
+    re.IGNORECASE,
+)
 _QUOTA_TROUBLE = re.compile(
     r"\b(?:quota|rate.?limit|exhausted|too many requests|billing|"
     r"insufficient.{0,20}(?:credit|balance|fund))\b",
@@ -194,6 +206,19 @@ def _from_status(status: int, body: str) -> Exception:
 
     if status == 429 or _QUOTA_TROUBLE.search(body):
         return BrainExhausted(f"out of quota: {snippet}")
+
+    if _ACCOUNT_BLOCKED.search(body):
+        # Not a credential problem, and telling someone to re-check a key
+        # that is perfectly fine wastes their afternoon. Google answers
+        # `403 PERMISSION_DENIED: Your project has been denied access` when
+        # the project itself is blocked -- the key is valid and irrelevant.
+        return BrainUnavailable(
+            f"this provider is refusing the account, not the key — the "
+            f"credential is fine, the project or plan behind it is not. "
+            f"Sort it out with the provider, or run "
+            f"`evie brains disable <name>` to take it out of the rotation. "
+            f"Provider said: {snippet}"
+        )
 
     if status in (401, 403) or (_AUTH_NOUN.search(body) and _AUTH_PROBLEM.search(body)):
         # Worth being specific: the provider's own wording does not

@@ -138,6 +138,17 @@ def _transport_failure(exc: BaseException) -> bool:
     return cause is not None and type(cause).__module__.startswith("httpx")
 
 
+def _blamed(notices: Iterable[str]) -> set[str]:
+    """Which brains a run of notices actually reported as having failed.
+
+    `_explain()` leads with the failing brain's name ("groq is rate limited
+    (...). Switching to gemini_api."), so the first word is the one being
+    blamed. Matching the name anywhere in the notice instead would count
+    "Switching to b" as "b failed", which is the opposite of what it says.
+    """
+    return {n.split()[0] for n in notices if n.split()}
+
+
 def _usable_chain(registry: BrainRegistry, skip: Iterable[str] = ()) -> list[str]:
     skip = set(skip)
     return [
@@ -254,7 +265,7 @@ async def classify(
         started = time.monotonic()
         try:
             with _env(BAD_KEY_VAR, BAD_KEY):
-                await asyncio.wait_for(
+                said = await asyncio.wait_for(
                     _collect(probe, Context()), timeout=REACH_TIMEOUT
                 )
         except asyncio.TimeoutError:
@@ -291,11 +302,25 @@ async def classify(
                        seconds=time.monotonic() - started)
             )
         else:
-            results.append(
-                Result("classify", name, False,
-                       "a deliberately invalid key was accepted",
-                       seconds=time.monotonic() - started)
-            )
+            # No error raised. Two very different situations, and the first
+            # version of this reported both as "the invalid key was accepted"
+            # -- which accused `github` of something it had probably not done.
+            elapsed = time.monotonic() - started
+            if said.strip():
+                results.append(
+                    Result("classify", name, False,
+                           f"a deliberately invalid key was accepted — it "
+                           f"answered: {said.strip()[:60]}",
+                           seconds=elapsed)
+                )
+            else:
+                results.append(
+                    Result("classify", name, True,
+                           "answered with no content and no error — nothing to "
+                           "classify; the chain treats an empty answer as a "
+                           "failure and moves on",
+                           skipped=True, seconds=elapsed)
+                )
     return results
 
 
@@ -324,8 +349,18 @@ async def chain(
 async def _exhaust_at(
     registry: BrainRegistry, usable: list[str], index: int
 ) -> Result:
-    victim, expected = usable[index], usable[index + 1]
-    label = f"{victim} → {expected}"
+    """Force one brain to fail; confirm someone further down answers.
+
+    Deliberately not "the *next* brain answers". On the first real run this
+    reported a failure when the chain had worked perfectly: groq was forced
+    to fail, gemini_api was genuinely 403'd, and openrouter answered. Two
+    brains down and still an answer is the design succeeding, not failing.
+    What matters is that some brain after the victim picked it up and that
+    you heard about every one that did not.
+    """
+    victim = usable[index]
+    candidates = usable[index + 1:]
+    label = f"{victim} gives out"
     started = time.monotonic()
 
     error = BrainExhausted("simulated: out of quota")
@@ -338,23 +373,38 @@ async def _exhaust_at(
                 (text if kind == "text" else notices).append(chunk)
         except Exception as exc:
             return Result("chain", label, False,
-                          f"the chain gave up instead of falling back: {exc}",
+                          f"nobody picked it up — the whole turn died: {exc}",
                           seconds=time.monotonic() - started)
 
         elapsed = time.monotonic() - started
+        landed = registry.active
         if not text:
             return Result("chain", label, False, "fell through but produced no answer",
                           seconds=elapsed)
-        if registry.active != expected:
+        if landed not in candidates:
             return Result("chain", label, False,
-                          f"answered, but landed on {registry.active}, not {expected}",
+                          f"answered, but landed on {landed}, which is not after "
+                          f"{victim} in the chain",
                           seconds=elapsed)
-        if not any(victim in n for n in notices):
+        blamed = _blamed(notices)
+        if victim not in blamed:
             return Result("chain", label, False,
                           "switched silently — you would never hear that it happened",
                           seconds=elapsed)
+
+        # Every brain it stepped over should have been blamed too, or a second
+        # failure passes unmentioned behind the first and you never learn that
+        # a brain has been dead for a week.
+        walked = usable[index:candidates.index(landed) + index + 2]
+        unannounced = [n for n in walked[:-1] if n not in blamed]
+        if unannounced:
+            return Result("chain", label, False,
+                          f"answered, but you were never told about "
+                          f"{', '.join(unannounced)} failing",
+                          seconds=elapsed)
         return Result("chain", label, True,
-                      f"heard: {notices[0].strip()[:70]}", seconds=elapsed)
+                      f"{' → '.join(walked)} · heard: {notices[0].strip()[:50]}",
+                      seconds=elapsed)
 
 
 async def _refusal_stops_the_chain(

@@ -530,3 +530,83 @@ class TestTransportFailuresAreSurvivable:
             async for _ in brain.stream("hi", Context()):
                 pass
         assert "Permission denied" in str(exc.value)
+
+
+class TestAnEmptyAnswerIsAFailure:
+    """A brain that returns nothing must not end the turn in silence.
+
+    `stream()` used to `return` when a brain yielded nothing and raised
+    nothing: no text, no error, no fallback. Worse than a crash, because a
+    crash at least names itself — E.V.I.E. simply said nothing and nothing was
+    recorded as wrong. Reachable from an HTTP 200 with an empty or
+    non-conforming body, which is how some gateways answer a rejected key,
+    and from a CLI brain that exits 0 having printed nothing.
+    """
+
+    async def test_an_empty_brain_hands_over_to_the_next(self):
+        reg = registry(
+            mute=FakeBrain("mute", text=""),
+            backup=FakeBrain("backup", text="Still here."),
+            default="mute",
+            fallback=["mute", "backup"],
+        )
+        text, notices = await collect(reg)
+        assert text.strip() == "Still here."
+        assert notices and "empty" in notices[0].lower()
+        assert reg.active == "backup"
+
+    async def test_an_empty_answer_from_the_last_brain_raises(self):
+        """An error is better than silence. Returning nothing here would look
+        exactly like her choosing not to reply."""
+        reg = registry(mute=FakeBrain("mute", text=""), default="mute")
+        with pytest.raises(BrainUnavailable, match="empty"):
+            await collect(reg)
+
+    async def test_every_brain_empty_still_raises(self):
+        reg = registry(
+            a=FakeBrain("a", text=""),
+            b=FakeBrain("b", text=""),
+            default="a",
+            fallback=["a", "b"],
+        )
+        with pytest.raises(BrainUnavailable):
+            await collect(reg)
+
+    async def test_a_brain_that_answers_is_untouched(self):
+        reg = registry(a=FakeBrain("a", text="fine"), default="a")
+        text, notices = await collect(reg)
+        assert text.strip() == "fine"
+        assert not notices
+
+
+class TestAccountDeniedIsNotAKeyProblem:
+    """Telling someone to re-check a key that is perfectly fine wastes their
+    afternoon. Google answers `403 PERMISSION_DENIED: Your project has been
+    denied access` when the project is blocked — the key is valid and beside
+    the point."""
+
+    import pytest as _pytest
+
+    @_pytest.mark.parametrize(
+        "body",
+        [
+            '{"error":{"code":403,"message":"Your project has been denied access. '
+            'Please contact support.","status":"PERMISSION_DENIED"}}',
+            '{"error":{"message":"Your account has been suspended"}}',
+            '{"error":{"message":"This organization is not authorized to use this model"}}',
+        ],
+    )
+    async def test_it_blames_the_account_not_the_key(self, body):
+        from evie.brains.openai_compat import _from_status
+
+        exc = _from_status(403, body)
+        assert isinstance(exc, BrainUnavailable), "the chain must still move on"
+        assert "not the key" in str(exc)
+        assert "stray quotes" not in str(exc)
+
+    async def test_an_ordinary_bad_key_still_says_so(self):
+        from evie.brains.openai_compat import _from_status
+
+        exc = _from_status(401, '{"error":{"message":"Invalid API key provided"}}')
+        assert "stray quotes" in str(exc)
+        assert "not the key" not in str(exc)

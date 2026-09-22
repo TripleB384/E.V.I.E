@@ -334,6 +334,17 @@ class BrainRegistry:
                 errors.append(_explain(name, exc))
                 continue
 
+            if not produced:
+                # Answered cleanly with nothing at all. Returning here would
+                # end the turn in silence -- no text, no error, no fallback --
+                # which is worse than a crash, because a crash at least names
+                # itself. Reachable from an HTTP 200 with an empty or
+                # non-conforming body (some gateways answer that way for a
+                # rejected key) and from a CLI brain that exits 0 having
+                # printed nothing.
+                errors.append(f"{name} returned an empty answer.")
+                continue
+
             if index > 0:
                 self._active = name  # a fallback that worked becomes the new default
             return
