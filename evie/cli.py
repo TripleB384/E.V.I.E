@@ -810,6 +810,75 @@ def memory_sync(message: str | None) -> None:
 # -- setup and diagnosis -------------------------------------------------
 
 
+@main.group(invoke_without_command=True)
+@click.pass_context
+def skills(ctx: click.Context) -> None:
+    """Jobs she can run, kept as markdown in the vault."""
+    if ctx.invoked_subcommand is None:
+        ctx.invoke(skills_list)
+
+
+def _vault():
+    from .config import Settings
+    from .memory import Vault
+
+    vault = Vault(Settings.load().vault)
+    if not vault.exists:
+        _fail(f"no vault at {vault.root}", "Run `evie init`.")
+    return vault
+
+
+@skills.command("sync")
+def skills_sync() -> None:
+    """Install the shipped skills, leaving any you have adopted alone."""
+    from . import skills as skill_files
+
+    vault = _vault()
+    report = skill_files.sync(vault.root)
+
+    for name in report.added:
+        console.print(f"[green]+[/] {name}")
+    for name in report.updated:
+        console.print(f"[green]~[/] {name} [dim]updated[/]")
+    for name in report.unchanged:
+        console.print(f"[dim]= {name}[/]")
+    for name in report.yours:
+        console.print(f"[yellow]·[/] {name} [dim]yours now — left alone[/]")
+
+    console.print(f"\n[dim]{vault.skills_dir()}[/]")
+    if not report.changed:
+        console.print("[dim]Nothing to do.[/]")
+
+
+@skills.command("list")
+def skills_list() -> None:
+    """What is installed, and what to say to run it."""
+    from . import skills as skill_files
+
+    vault = _vault()
+    found = skill_files.installed(vault.root)
+    if not found:
+        console.print("[yellow]No skills installed.[/] Run `evie skills sync`.")
+        return
+
+    table = Table(box=None, pad_edge=False)
+    table.add_column("skill", style="bold")
+    table.add_column("say")
+    table.add_column("", style="dim")
+    for skill in found:
+        table.add_row(
+            skill.name,
+            escape(skill.triggers[0]) if skill.triggers else "[dim]—[/]",
+            "" if skill.managed else "yours",
+        )
+    console.print(table)
+    console.print(
+        f"\n[dim]Anything naming one of these goes to a brain with hands. "
+        f"Edit them in {vault.skills_dir()} — delete the "
+        f"`evie:managed` line to stop sync overwriting one.[/]"
+    )
+
+
 @main.command()
 @click.option("--owner", default=None, help="Your name, for EVIE.md.")
 def init(owner: str | None) -> None:
@@ -832,6 +901,13 @@ def init(owner: str | None) -> None:
     settings = Settings.load()
     vault = Vault(settings.vault).ensure(owner or os.environ.get("USER", "you"))
     console.print(f"[green]✓[/] vault at {vault.root}")
+
+    from . import skills as skill_files
+
+    report = skill_files.sync(vault.root)
+    if report.changed:
+        console.print(f"[green]✓[/] {report.changed} skills in {vault.skills_dir()}")
+
     console.print("\nNext: [bold]evie doctor[/]")
 
 
@@ -976,6 +1052,20 @@ def doctor(fix: bool) -> None:
 
     vault = Vault(settings.vault)
     check("memory vault", vault.exists, str(vault.root), "Run `evie init`.")
+
+    if vault.exists:
+        from . import skills as skill_files
+
+        if fix:
+            skill_files.sync(vault.root)
+        here = skill_files.installed(vault.root)
+        missing = len(skill_files.shipped()) - len(here)
+        check(
+            "skills",
+            not missing,
+            f"{len(here)} installed",
+            "Run `evie skills sync` (or `evie doctor --fix`).",
+        )
 
     console.print()
     if problems:

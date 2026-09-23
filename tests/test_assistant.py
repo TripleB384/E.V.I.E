@@ -338,3 +338,61 @@ class TestSheDoesNotReadTheWholeList:
         a = Assistant(reg, Settings(vault=tmp_path / "none"), None)
         await a.ask("hello")
         assert "do not read them all out" not in a.ctx.system
+
+
+class TestSheCanRunTheSkillsInTheVault:
+    """Wiring, not matching -- the matching is pinned in test_skills.py.
+
+    Without this hand-off the router never learns a skill exists, every test
+    over there still passes, and a real "do my weekly deadline sweep" goes to
+    the brain with no hands.
+    """
+
+    def _assistant(self, tmp_path):
+        vault = Vault(tmp_path / "v").ensure("test")
+        reg = BrainRegistry(
+            {"claude": FakeBrain("claude", agentic=True),
+             "groq": FakeBrain("groq", agentic=False)},
+            default="groq",
+            tiers={"simple": "groq", "normal": "groq", "agentic": "claude"},
+        )
+        return Assistant(reg, Settings(vault=vault.root), vault), vault
+
+    async def test_naming_a_skill_reaches_the_brain_with_hands(self, tmp_path):
+        from evie import skills
+
+        a, vault = self._assistant(tmp_path)
+        skills.sync(vault.root)
+
+        await a.ask("do my weekly deadline sweep")
+        assert a.registry.get("claude").prompts, "claude was never called"
+        assert not a.registry.get("groq").prompts
+
+    async def test_an_ordinary_question_still_goes_to_the_cheap_brain(self, tmp_path):
+        from evie import skills
+
+        a, vault = self._assistant(tmp_path)
+        skills.sync(vault.root)
+
+        await a.ask("what's the capital of Peru")
+        assert a.registry.get("groq").prompts
+        assert not a.registry.get("claude").prompts
+
+    async def test_a_skill_installed_mid_session_is_heard(self, tmp_path):
+        """Read per turn, not cached: `evie skills sync` in another terminal
+        should not need a restart to take effect."""
+        from evie import skills
+
+        a, vault = self._assistant(tmp_path)
+        await a.ask("do my weekly deadline sweep")
+        assert a.registry.get("groq").prompts, "no skills yet, so the cheap brain"
+
+        skills.sync(vault.root)
+        await a.ask("do my weekly deadline sweep")
+        assert a.registry.get("claude").prompts
+
+    async def test_no_vault_is_not_an_error(self, tmp_path):
+        reg = BrainRegistry({"groq": FakeBrain("groq")}, default="groq")
+        a = Assistant(reg, Settings(vault=tmp_path / "nope"), None)
+        reply = await a.ask("do my weekly deadline sweep")
+        assert reply.text

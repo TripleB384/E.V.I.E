@@ -14,6 +14,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 from enum import Enum
+from typing import Mapping, Sequence
 
 from .brains import BrainRegistry
 from .brains.registry import UnknownBrain
@@ -32,6 +33,7 @@ class Decision:
     text: str = ""            # the prompt to send, or the reply to speak
     brain: str | None = None  # force a specific brain for this turn
     tier: str = "normal"      # how hard we judged it, for --debug
+    skill: str | None = None  # the skill this names, if it names one
 
 
 # Leading "evie, ..." is address, not content.
@@ -209,6 +211,40 @@ _GREETING = re.compile(
 _QUICK_MAX_WORDS = 18
 
 
+# --- skills ---------------------------------------------------------------
+#
+# A skill is invoked by *name*, and everything above matches verbs. "check my
+# deadlines" already reaches a brain with hands through _TASK_VERBS, but "do
+# my weekly deadline sweep" is a short question that scores as *simple* and
+# goes to the cheap brain -- which has no file access and does not know the
+# skill exists, so it answers about the sweep instead of running it. Six of
+# eight natural phrasings went that way before this existed.
+#
+# Matching is on flattened text, the same trick `BrainRegistry.resolve` uses,
+# because speech-to-text does not preserve word boundaries: "deadline sweep"
+# comes back as one word about as often as two.
+
+
+def _flat(text: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "", text.lower())
+
+
+def names_a_skill(text: str, skills: Mapping[str, Sequence[str]]) -> str | None:
+    """The skill this utterance asks for, or None.
+
+    Substring matching on flattened text is loose, and that is the right way
+    round here: a false positive routes a question to a slower brain that can
+    still answer it, while a false negative sends a job to a brain that cannot
+    do it at all. Triggers are held to two words (see `skills.py`), which is
+    what keeps the looseness survivable.
+    """
+    flat = _flat(text)
+    for name, phrases in skills.items():
+        if any((p := _flat(phrase)) and p in flat for phrase in phrases):
+            return name
+    return None
+
+
 def strip_address(text: str) -> str:
     return _ADDRESS.sub("", text).strip()
 
@@ -245,8 +281,17 @@ def complexity(text: str) -> str:
     return "normal"
 
 
-def route(said: str, registry: BrainRegistry) -> Decision:
-    """Turn a transcribed utterance into something to do."""
+def route(
+    said: str,
+    registry: BrainRegistry,
+    skills: Mapping[str, Sequence[str]] | None = None,
+) -> Decision:
+    """Turn a transcribed utterance into something to do.
+
+    `skills` maps an installed skill's name to the phrases that invoke it.
+    Passed in rather than read here, so the router keeps no knowledge of where
+    the vault is.
+    """
     text = strip_address(said)
     if not text:
         return Decision(Action.REPLY, "I didn't catch that.")
@@ -286,6 +331,13 @@ def route(said: str, registry: BrainRegistry) -> Decision:
             if registry.is_parked(wanted := result.brain):
                 spoken += f" Heads up, {registry.parked[wanted]}."
             return Decision(Action.REPLY, spoken)
+
+    # After the swap commands, so "switch to claude" stays a switch, and
+    # before tiering, which is what gets a skill invocation wrong.
+    if skills and (named := names_a_skill(text, skills)):
+        return Decision(
+            Action.ANSWER, text, registry.for_tier("agentic"), "agentic", named
+        )
 
     tier = complexity(text)
     return Decision(Action.ANSWER, text, registry.for_tier(tier), tier)

@@ -171,7 +171,7 @@ class Assistant:
         Commands handled by E.V.I.E. herself never reach a model, so a brain
         swap is instant and free.
         """
-        decision: Decision = route(said, self.registry)
+        decision: Decision = route(said, self.registry, self._skills())
 
         if decision.action is Action.QUIT:
             yield "text", "Goodbye."
@@ -207,6 +207,15 @@ class Assistant:
                 used = self.registry.active
 
         self._remember(said, "".join(spoken), used)
+
+    def _skills(self) -> dict[str, tuple[str, ...]]:
+        """What the vault can be asked to run.
+
+        Read per turn rather than cached: `evie skills sync` can install one
+        while she is running, and a skill that needs a restart to be heard is
+        a skill nobody uses.
+        """
+        return self.vault.skill_triggers() if self.vault else {}
 
     def _remember(self, said: str, replied: str, brain: str) -> None:
         self.ctx.transcript.append(Turn("user", said))
