@@ -180,3 +180,126 @@ class TestRemoteValidation:
             raise AssertionError("should have refused")
         except GitError as exc:
             assert "SSH prefix" in str(exc)
+
+
+class TestBriefing:
+    """What she knows without opening a file.
+
+    The vault was write-only until this existed: Canvas sync wrote sixteen
+    real deadlines into classes/upcoming.md and "what's due this week" still
+    got "I'm not sure what's on your calendar yet", because nothing ever read
+    the file back.
+    """
+
+    import datetime as _dt
+
+    def _stocked(self, tmp_path):
+        vault = Vault(tmp_path / "v").ensure("Isaac")
+        classes = vault.root / "classes"
+        classes.mkdir(parents=True, exist_ok=True)
+        (classes / "upcoming.md").write_text(
+            "# Upcoming\n\n## Coming up\n\n"
+            "- [ ] **Thu 25 Sep, 11:59 pm** — Directed Writing draft (AICE ENG LANG)\n"
+        )
+        vault.log("you", "the compiler project is the big one")
+        return vault
+
+    def test_it_leads_with_todays_date(self, tmp_path):
+        """A model has no clock, and "this week" cannot be resolved without
+        one. Every deadline answer is wrong otherwise."""
+        block = self._stocked(tmp_path).briefing()
+        assert block.startswith("Today is ")
+        assert f"{self._dt.date.today():%Y}" in block
+
+    def test_it_carries_the_deadlines(self, tmp_path):
+        block = self._stocked(tmp_path).briefing()
+        assert "Directed Writing draft" in block
+        assert "Thu 25 Sep" in block
+
+    def test_it_carries_the_recent_log(self, tmp_path):
+        assert "compiler project" in self._stocked(tmp_path).briefing()
+
+    def test_hand_written_notes_come_along(self, tmp_path):
+        """Notes added outside the sync markers are context too."""
+        vault = self._stocked(tmp_path)
+        path = vault.root / "classes" / "upcoming.md"
+        path.write_text(path.read_text() + "\n## Mine\n\nSigler moved the rubric.\n")
+        assert "Sigler moved the rubric" in vault.briefing()
+
+    def test_an_empty_vault_is_just_the_date(self, tmp_path):
+        block = Vault(tmp_path / "empty").briefing()
+        assert block.startswith("Today is")
+        assert "What is due" not in block
+
+    def test_no_canvas_sync_yet_is_not_an_error(self, tmp_path):
+        vault = Vault(tmp_path / "v").ensure("Isaac")
+        block = vault.briefing()
+        assert "Today is" in block and "What is due" not in block
+
+    def test_it_stays_under_the_cap(self, tmp_path):
+        """This rides on every request. An uncapped vault would quietly
+        inflate the cost of saying hello."""
+        vault = Vault(tmp_path / "v").ensure("Isaac")
+        classes = vault.root / "classes"
+        classes.mkdir(parents=True, exist_ok=True)
+        (classes / "upcoming.md").write_text(
+            "\n".join(f"- [ ] item number {i}" for i in range(4000))
+        )
+        block = vault.briefing()
+        assert len(block) <= vault.BRIEFING_CAP + 80, len(block)
+        assert "trimmed" in block, "it should say it was cut, not end mid-thought"
+
+    def test_trimming_keeps_the_head(self, tmp_path):
+        """Cutting from the front would lose today's date and the soonest
+        deadlines — the two things most likely to be asked about."""
+        vault = Vault(tmp_path / "v").ensure("Isaac")
+        classes = vault.root / "classes"
+        classes.mkdir(parents=True, exist_ok=True)
+        (classes / "upcoming.md").write_text(
+            "- [ ] DUE FIRST\n" + "\n".join(f"- [ ] filler {i}" for i in range(4000))
+        )
+        block = vault.briefing()
+        assert "Today is" in block
+        assert "DUE FIRST" in block
+
+    def test_an_unreadable_file_does_not_take_the_turn_down(self, tmp_path):
+        vault = Vault(tmp_path / "v").ensure("Isaac")
+        classes = vault.root / "classes"
+        classes.mkdir(parents=True, exist_ok=True)
+        (classes / "upcoming.md").mkdir()   # a directory where a file should be
+        assert "Today is" in vault.briefing()
+
+
+class TestSayingHowOldItIs:
+    """A confident answer from a week-old file is worse than a hedged one,
+    and only she can know to hedge."""
+
+    import datetime as _dt
+
+    def _aged(self, tmp_path, hours):
+        import os
+
+        vault = Vault(tmp_path / "v").ensure("test")
+        classes = vault.root / "classes"
+        classes.mkdir(parents=True, exist_ok=True)
+        (classes / "upcoming.md").write_text("- [ ] **Thu 25 Sep** — Lab 4\n")
+        old = self._dt.datetime.now().timestamp() - hours * 3600
+        os.utime(vault.deadlines_path(), (old, old))
+        return vault
+
+    def test_a_fresh_sync_says_so(self, tmp_path):
+        assert "in the last hour" in self._aged(tmp_path, 0.2).briefing()
+
+    def test_hours_are_counted(self, tmp_path):
+        assert "5 hours ago" in self._aged(tmp_path, 5).briefing()
+
+    def test_yesterday_is_named(self, tmp_path):
+        assert "yesterday" in self._aged(tmp_path, 30).briefing()
+
+    def test_days_are_counted(self, tmp_path):
+        assert "4 days ago" in self._aged(tmp_path, 24 * 4).briefing()
+
+    def test_never_synced_claims_nothing(self, tmp_path):
+        vault = Vault(tmp_path / "v").ensure("test")
+        assert vault.deadlines_age() is None
+        assert "last synced" not in vault.briefing()

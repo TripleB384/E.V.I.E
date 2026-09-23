@@ -149,11 +149,32 @@ def run(debug: bool, brain: str | None) -> None:
         sys.exit(1)
 
     try:
+        asyncio.run(_refresh_sources(assistant))
+    except Exception as exc:  # noqa: BLE001 - never block startup on a sync
+        console.print(f"[dim]could not refresh Canvas: {escape(str(exc))}[/]")
+
+    try:
         asyncio.run(VoiceLoop(assistant, debug=debug).run())
     except KeyboardInterrupt:
         console.print("\n[dim]Goodbye.[/]")
     except Exception as exc:
         _fail(str(exc), "Run `evie doctor` for the usual causes.")
+
+
+async def _refresh_sources(assistant) -> None:
+    """Pull anything that has gone stale before she answers from it.
+
+    Nothing re-synced Canvas until this existed, so she answered confidently
+    from whatever was last pulled by hand. A note is printed only when
+    something is wrong or something changed -- a silent no-op is the common
+    case and does not deserve a line.
+    """
+    if not assistant.vault:
+        return
+    from .sources.canvas import refresh
+
+    if note := await refresh(assistant.settings, assistant.vault):
+        console.print(f"[dim]{escape(note)}[/]")
 
 
 # -- isolating the brain path -------------------------------------------
@@ -174,6 +195,7 @@ def ask(prompt: str | None, brain: str | None) -> None:
         assistant = Assistant.load()
         if brain:
             assistant.registry.use(brain)
+        await _refresh_sources(assistant)
         async for kind, chunk in assistant.respond(text):
             if kind == "text":
                 console.print(chunk, end="")
@@ -304,7 +326,7 @@ def brains_list() -> None:
     console.print("[dim]config: " + " + ".join(str(p) for p in layers) + "[/]")
 
 
-def _edit_overrides(change) -> Path:
+def _edit_overrides(change, filename: str = "brains.yaml") -> Path:
     """Apply `change` to your own override file, creating it if needed.
 
     Always your file, never the shipped defaults. Writing to whichever config
@@ -315,7 +337,7 @@ def _edit_overrides(change) -> Path:
 
     from .config import user_dir
 
-    path = user_dir() / "brains.yaml"
+    path = user_dir() / filename
     path.parent.mkdir(parents=True, exist_ok=True)
     data = (yaml.safe_load(path.read_text()) if path.is_file() else None) or {}
     change(data)
@@ -498,6 +520,203 @@ def brains_test(only: str | None, one: str | None, skip: tuple[str, ...], deep: 
                       "inference.[/]")
         sys.exit(1)
     console.print(f"[green]{summary}[/]")
+
+
+def _capture_secret(var: str, label: str) -> bool:
+    """Take a credential from a person without it touching a command line.
+
+    `getpass` rather than an argument or an echoed prompt: a secret in argv is
+    in shell history, is visible in `ps`, and sits in the scrollback waiting
+    to be copied into a chat window with everything else. Two keys have
+    leaked from this project that way, and the second leak happened while
+    recovering from a typo in the very command the docs recommended.
+    """
+    from getpass import getpass
+
+    from .secrets import manual_instructions, shell_rc, store, why_not
+
+    rc = shell_rc()
+    console.print(
+        f"\n[yellow]${var} is not set.[/] Generate one in a browser at "
+        f"[bold]Account → Settings → '+ New Access Token'[/]."
+    )
+    if rc is None or not _is_interactive():
+        console.print("  " + escape(manual_instructions(var, rc)))
+        return False
+
+    console.print(
+        f"  [dim]Paste it at the prompt — nothing will appear as you type, and "
+        f"it stays out of your shell history.[/]"
+    )
+    try:
+        value = getpass(f"  {label}: ")
+    except (EOFError, KeyboardInterrupt):
+        console.print("\n  [dim]Nothing saved.[/]")
+        return False
+
+    if reason := why_not(value):
+        # The reason, never the value -- an error message is exactly when
+        # someone pastes their whole terminal at you.
+        _fail(f"that does not look like a token: {reason}",
+              f"Run `evie canvas setup` again when you have it.")
+
+    if not click.confirm(f"  Save it to {rc}?", default=True):
+        console.print("  " + escape(manual_instructions(var, rc)))
+        return False
+
+    store(var, value, rc)
+    # For this process only, so the caller can verify the token immediately
+    # rather than sending someone to another terminal to find out whether it
+    # is even valid. Does not and cannot affect the parent shell.
+    os.environ[var] = value
+    console.print(f"  [green]✓[/] {len(value)} characters written to [dim]{rc}[/]")
+    return True
+
+
+# -- canvas --------------------------------------------------------------
+
+
+@main.group(invoke_without_command=True)
+@click.pass_context
+def canvas(ctx: click.Context) -> None:
+    """Pull Canvas deadlines into the vault."""
+    if ctx.invoked_subcommand is None:
+        ctx.invoke(canvas_status)
+
+
+def _canvas():
+    """Build a client, or fail with the specific thing that is missing."""
+    from .config import Settings
+    from .sources import Canvas, CanvasError
+
+    settings = Settings.load()
+    try:
+        return Canvas.from_settings(settings), settings
+    except CanvasError as exc:
+        _fail(str(exc))
+
+
+@canvas.command("setup")
+@click.argument("url")
+def canvas_setup(url: str) -> None:
+    """Point E.V.I.E. at your school's Canvas.
+
+        evie canvas setup browardschools.instructure.com
+
+    Paste the URL straight from your browser bar -- the scheme, the trailing
+    slash and any ?login_success=1 are all trimmed. This exists because the
+    alternative is hand-editing YAML, and a config block in a chat window
+    looks exactly like something you paste into a shell.
+    """
+    from .secrets import shell_rc
+    from .sources.canvas import clean_base_url
+
+    try:
+        base = clean_base_url(url)
+    except ValueError as exc:
+        _fail(str(exc), "Try: evie canvas setup yourdistrict.instructure.com")
+
+    def change(data):
+        data.setdefault("canvas", {})["base_url"] = base
+
+    path = _edit_overrides(change, "config.yaml")
+    console.print(f"[green]✓[/] Canvas is [bold]{escape(base)}[/]")
+    console.print(f"  [dim]{path}[/]")
+
+    from .config import Settings
+
+    var = Settings.load().canvas.token_env
+    if not os.environ.get(var) and not _capture_secret(var, "Canvas token"):
+        return
+
+    # Prove it works now, while the token is still on the clipboard. Sending
+    # someone to a new terminal to discover a typo is a context switch for
+    # nothing, and "it saved, then said it was not set" reads as a failure
+    # even when the save worked.
+    console.print()
+    ctx = click.get_current_context()
+    ctx.invoke(canvas_status)
+    console.print(
+        f"\n  [dim]That was this shell only. Open a new terminal (or "
+        f"`source {shell_rc()}`) before running evie again.[/]"
+    )
+
+
+@canvas.command("status")
+def canvas_status() -> None:
+    """Check the URL and token without writing anything."""
+    from .sources import CanvasError
+
+    client, settings = _canvas()
+    console.print(f"[dim]{client.base_url}[/]")
+    try:
+        who = asyncio.run(client.whoami())
+        courses = asyncio.run(client.courses())
+    except CanvasError as exc:
+        _fail(str(exc))
+    console.print(f"[green]✓[/] signed in as [bold]{escape(who)}[/]")
+    console.print(f"[green]✓[/] {len(courses)} active courses")
+    for name in list(courses.values())[:15]:
+        console.print(f"    [dim]{escape(name)}[/]")
+
+
+@canvas.command("sync")
+@click.option("--days", default=None, type=int, help="How far ahead to look.")
+@click.option("--dry-run", is_flag=True, help="Print what would be written.")
+@click.option("--shape", is_flag=True,
+              help="Report what Canvas actually sent, for when nothing parses.")
+def canvas_sync(days: int | None, dry_run: bool, shape: bool) -> None:
+    """Write assignments and due dates into the vault as markdown.
+
+    Not an MCP server on purpose: the vault is shared by every brain, so a
+    deadline written here is answerable by the fast free one instead of
+    costing a Claude Code session per question.
+    """
+    from .memory import Vault
+    from .sources import CanvasError
+    from .sources.canvas import describe_shape, render, write
+
+    client, settings = _canvas()
+    ahead = days if days is not None else settings.canvas.days_ahead
+
+    try:
+        found, raw = asyncio.run(
+            client.deadlines(settings.canvas.days_back, ahead)
+        )
+    except CanvasError as exc:
+        _fail(str(exc))
+
+    if shape or (raw and not found):
+        console.print("[bold]what Canvas actually sent[/]")
+        console.print(escape(describe_shape(raw)))
+        if not found and raw:
+            console.print(
+                "\n[yellow]Canvas sent items but none parsed as a deadline.[/] "
+                "The field names above are what this needs to read; send them "
+                "to me and it is a one-line fix."
+            )
+        if shape:
+            return
+
+    if dry_run:
+        console.print(escape(render(found, title="Upcoming")))
+        return
+
+    vault = Vault(settings.vault)
+    if not vault.exists:
+        _fail(f"no vault at {vault.root}", "Run `evie init` first.")
+
+    paths = write(vault, found)
+    late = sum(1 for d in found if d.overdue)
+    console.print(
+        f"[green]✓[/] {len(found)} items across {len(paths) - 1} courses"
+        + (f", [yellow]{late} late[/]" if late else "")
+    )
+    console.print(f"  [dim]{paths[0]}[/]")
+    console.print(
+        "\n[dim]Ask her \"what's due this week\" — it should be answered by the "
+        "quick brain, with no Canvas call.[/]"
+    )
 
 
 # -- memory --------------------------------------------------------------

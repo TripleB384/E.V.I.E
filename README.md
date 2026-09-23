@@ -96,7 +96,7 @@ Takes a minute or two; onnxruntime and the Whisper libraries are large.
 pytest
 ```
 
-113 tests pass, with no hardware and no credentials.
+457 tests pass, with no hardware and no credentials.
 
 **5. Set up and go:**
 
@@ -126,7 +126,7 @@ brain authenticates itself, the same way you'd use it from a terminal:
 | `claude` | `npm i -g @anthropic-ai/claude-code && claude` → `/login` |
 | `gemini_cli` | `npm i -g @google/gemini-cli && gemini` → sign in (free, ~1,000 req/day) |
 | `codex` | `npm i -g @openai/codex && codex` → sign in |
-| `groq` | free key from [console.groq.com](https://console.groq.com) → `export GROQ_API_KEY=…` |
+| `groq` | free key from [console.groq.com](https://console.groq.com) → store it as `GROQ_API_KEY` (see below — not on a command line) |
 | `ollama` | `ollama pull qwen3:8b` — fully offline |
 
 Turn a brain on by setting `enabled: true` in `brains.yaml`.
@@ -144,10 +144,24 @@ E.V.I.E. reads `os.environ` at call time and never writes a credential to disk.
 That is what makes this config publishable, and it is enforced by a test:
 `TestRepoHygiene` scans every tracked file for credential shapes on each run.
 
-Put your keys in `~/.zshrc` so they persist across terminals:
+**Never put a key on a command line.** `echo 'export KEY=…' >> ~/.zshrc` is
+the obvious way and it is the unsafe one: the value lands in your shell
+history, is visible in `ps` while the command runs, and sits in your
+scrollback waiting to be copied somewhere with everything else around it.
+Two keys have leaked from this project exactly that way, and the second went
+while its owner was recovering from a typo in that very command.
+
+Paste at a prompt instead, where nothing echoes and nothing is recorded:
 
 ```bash
-echo 'export GROQ_API_KEY=your_key_here' >> ~/.zshrc
+read -rs "t?Paste the key, then press Enter: " && printf 'export GROQ_API_KEY=%s\n' "$t" >> ~/.zshrc && unset t
+```
+
+`evie canvas setup` does this for you for the Canvas token. Check a key is
+set, in a new terminal, without printing it:
+
+```bash
+echo ${#GROQ_API_KEY}
 ```
 
 If a key ever reaches a chat, a screenshot, or a commit, rotate it rather than
@@ -203,6 +217,63 @@ layer to go stale.
   daily/2026-09-20.md  rolling log
   classes/  business/  people/  projects/
 ```
+
+## Canvas
+
+```bash
+evie canvas setup <host>   # point it at your school, once
+evie canvas status         # check the URL and token, write nothing
+evie canvas sync           # deadlines into the vault as markdown
+```
+
+Point it at your school — paste the URL straight from your browser bar, the
+scheme and any `?login_success=1` are trimmed for you:
+
+```bash
+evie canvas setup yourdistrict.instructure.com
+```
+
+`setup` then prompts for the token: generate one in a browser at Account →
+Settings → "+ New Access Token", and paste it at the prompt. Nothing echoes,
+nothing reaches your shell history, and it is written to your shell rc with
+mode 600. It then makes a real call straight away and prints your name and
+course count, so a mistyped token is caught while it is still on your
+clipboard.
+
+That check runs in the current process only. A shell rc file reaches shells
+started *after* it is written, so open a new terminal (or `source ~/.zshrc`)
+before running `evie` again — if you forget, the error says exactly that
+rather than telling you to set it up again. Canvas shows a token exactly once and it is password-equivalent, so
+it is never accepted as a command-line argument — there is deliberately no
+`--token` option, and a test enforces that. Some school districts disable token generation entirely; if the
+"Approved Integrations" section is missing, that is the answer.
+
+Sync writes `classes/upcoming.md` and `classes/<course>/deadlines.md`. Only
+the block between the `<!-- evie:canvas -->` markers is replaced, so notes you
+add to those files by hand survive.
+
+Those deadlines, today's date and the last few days of log are then injected
+into **every** brain's context each turn, capped so they can't inflate the
+cost of saying hello. That is what lets the free brain answer *"what's due
+this week"* in under a second without a Canvas call or a Claude Code session.
+Dates in the files are absolute, so a file read a week after syncing is still
+true — the spoken answer computes "tomorrow" when you ask, not when you
+synced.
+
+`evie run` and `evie ask` re-sync on their own when the copy is more than
+`canvas.refresh_hours` old (6 by default, `0` to keep it manual), so a
+deadline posted this morning is hers by the afternoon. Canvas being
+unreachable never blocks an answer: she keeps the saved copy, says how old it
+is, and carries on.
+
+**This is not an MCP server, deliberately.** MCP tools only reach agentic
+brains, so every "what's due Thursday" would boot a Claude Code session —
+5–11s and real plan allowance — to answer something the free brain does in
+0.3s. Syncing into the vault means the fast brain can answer it, it works
+offline, and it survives a Canvas outage.
+
+If a sync writes nothing, `evie canvas sync --shape` prints what Canvas
+actually sent.
 
 ## The stack
 
