@@ -834,19 +834,22 @@ def skills_sync() -> None:
     from . import skills as skill_files
 
     vault = _vault()
-    report = skill_files.sync(vault.root)
+    changed = 0
+    for what, report in (("skills", skill_files.sync(vault.root)),
+                         ("agents", skill_files.sync_agents(vault.root))):
+        console.print(f"[bold]{what}[/]")
+        for name in report.added:
+            console.print(f"  [green]+[/] {name}")
+        for name in report.updated:
+            console.print(f"  [green]~[/] {name} [dim]updated[/]")
+        for name in report.unchanged:
+            console.print(f"  [dim]= {name}[/]")
+        for name in report.yours:
+            console.print(f"  [yellow]·[/] {name} [dim]yours now — left alone[/]")
+        changed += report.changed
 
-    for name in report.added:
-        console.print(f"[green]+[/] {name}")
-    for name in report.updated:
-        console.print(f"[green]~[/] {name} [dim]updated[/]")
-    for name in report.unchanged:
-        console.print(f"[dim]= {name}[/]")
-    for name in report.yours:
-        console.print(f"[yellow]·[/] {name} [dim]yours now — left alone[/]")
-
-    console.print(f"\n[dim]{vault.skills_dir()}[/]")
-    if not report.changed:
+    console.print(f"\n[dim]{vault.root / '.claude'}[/]")
+    if not changed:
         console.print("[dim]Nothing to do.[/]")
 
 
@@ -872,11 +875,95 @@ def skills_list() -> None:
             "" if skill.managed else "yours",
         )
     console.print(table)
+
+    if agents := skill_files.installed_agents(vault.root):
+        console.print("\n[bold]sub-agents[/] [dim](claude delegates to these by "
+                      "description; nothing to say out loud)[/]")
+        for agent in agents:
+            mine = "" if agent.managed else " [dim]yours[/]"
+            console.print(f"  [bold]{agent.name}[/]{mine} [dim]{escape(agent.description[:64])}[/]")
+
     console.print(
-        f"\n[dim]Anything naming one of these goes to a brain with hands. "
-        f"Edit them in {vault.skills_dir()} — delete the "
+        f"\n[dim]Anything naming a skill goes to a brain with hands. "
+        f"Edit them in {vault.root / '.claude'} — delete the "
         f"`evie:managed` line to stop sync overwriting one.[/]"
     )
+
+
+@main.command()
+@click.option("--probe", is_flag=True,
+              help="Make one real call per brain, so status is fact not guess.")
+@click.option("--voice", is_flag=True, help="Render the brief to audio with your TTS engine.")
+@click.option("--open", "open_it", is_flag=True, help="Open it in your browser.")
+def dashboard(probe: bool, voice: bool, open_it: bool) -> None:
+    """Write the command centre, with today's real numbers in it."""
+    from .config import PACKAGE_DEFAULTS, Settings, load_registry, user_dir
+    from .dashboard import build, write
+    from .memory import Vault
+
+    settings = Settings.load()
+    vault = Vault(settings.vault)
+    registry = load_registry()
+
+    if probe:
+        console.print("[dim]Probing every brain with one real call…[/]")
+    data = asyncio.run(build(registry, vault if vault.exists else None,
+                             settings, probe=probe))
+
+    target = user_dir() / "dashboard"
+    if voice:
+        data["audio"] = _render_brief(data, target, settings)
+
+    page = write(target, data, PACKAGE_DEFAULTS / "dashboard" / "dashboard.html")
+
+    console.print(f"[green]✓[/] {page}")
+    for row in data["connectors"]:
+        mark = {"ready": "[green]●[/]", "unverified": "[yellow]●[/]",
+                "exhausted": "[yellow]●[/]", "offline": "[red]●[/]"}.get(row["state"], "[dim]○[/]")
+        console.print(f"  {mark} {row['name']:<14} "
+                      f"[dim]{row['label'] or row['state']}[/]")
+    if not probe:
+        console.print("  [dim]`unverified` means installed but never called. "
+                      "Use --probe to settle it.[/]")
+    if data["chip"]:
+        console.print(f"  [yellow]{escape(data['chip'])}[/]")
+
+    if open_it:
+        import webbrowser
+
+        webbrowser.open(page.as_uri())
+
+
+def _render_brief(data: dict, target: Path, settings) -> str:
+    """Speak the lines already on the page, with whatever engine is configured.
+
+    Deliberately not a new subsystem: the dashboard reads out the priorities it
+    is already showing, so there is nothing here that could disagree with the
+    screen.
+    """
+    from .voice import load_engine
+
+    text = ". ".join(
+        str(part) for part in
+        [data["greeting"], data["headline"], *data["priorities"], data["closer"]]
+        if part
+    )
+    if not text:
+        console.print("[yellow]nothing to say yet — no deadlines synced[/]")
+        return ""
+    try:
+        engine = load_engine(settings.voice.tts, settings.voice)
+        samples = engine.synth(text)
+        engine.close()
+        import soundfile as sf
+
+        target.mkdir(parents=True, exist_ok=True)
+        sf.write(target / "brief.wav", samples, engine.sample_rate)
+    except Exception as exc:  # noqa: BLE001 - audio is a nicety, never fatal
+        console.print(f"[yellow]no audio ({type(exc).__name__}: {escape(str(exc))}) — "
+                      f"the button will use your browser's voice instead[/]")
+        return ""
+    return "brief.wav"
 
 
 @main.command()
@@ -904,9 +991,11 @@ def init(owner: str | None) -> None:
 
     from . import skills as skill_files
 
-    report = skill_files.sync(vault.root)
-    if report.changed:
-        console.print(f"[green]✓[/] {report.changed} skills in {vault.skills_dir()}")
+    installed = (skill_files.sync(vault.root).changed
+                 + skill_files.sync_agents(vault.root).changed)
+    if installed:
+        console.print(f"[green]✓[/] {installed} skills and agents in "
+                      f"{vault.root / '.claude'}")
 
     console.print("\nNext: [bold]evie doctor[/]")
 
@@ -1058,12 +1147,15 @@ def doctor(fix: bool) -> None:
 
         if fix:
             skill_files.sync(vault.root)
+            skill_files.sync_agents(vault.root)
         here = skill_files.installed(vault.root)
-        missing = len(skill_files.shipped()) - len(here)
+        agents = skill_files.installed_agents(vault.root)
+        missing = (len(skill_files.shipped()) - len(here)
+                   + len(skill_files.shipped_agents()) - len(agents))
         check(
-            "skills",
+            "skills and agents",
             not missing,
-            f"{len(here)} installed",
+            f"{len(here)} skills, {len(agents)} agents",
             "Run `evie skills sync` (or `evie doctor --fix`).",
         )
 

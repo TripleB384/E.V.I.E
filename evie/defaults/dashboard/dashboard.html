@@ -1,0 +1,456 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>E.V.I.E. — Command Centre</title>
+<!--
+  One self-contained file. Canvas and CSS, no libraries.
+
+  Everything it displays comes from evie_data.js, which `evie dashboard`
+  regenerates from real state -- brain health, Canvas deadlines, the daily log.
+  Nothing here invents a number: a missing field renders as "no data", and a
+  brain whose reachability has not been proven renders as "unverified" rather
+  than green. That distinction is the whole point of the status column.
+
+  Google Fonts is the only external reference, and there is a full fallback
+  stack, so this works with the network off.
+-->
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@500;700;900&family=Share+Tech+Mono&display=swap" rel="stylesheet">
+<style>
+:root{
+  --bg:#03060e; --bg2:#060d1c;
+  --cy:#5ce1ff; --cy-dim:#2d7f9d; --cy-deep:#123a4d;
+  --ink:#d8f6ff; --ink2:#7fb6cc; --ink3:#46707f;
+  --ok:#41e0a3; --warn:#ffb347; --bad:#ff6b6b;
+  --hud:rgba(92,225,255,.18);
+  --mono:"Share Tech Mono",ui-monospace,SFMono-Regular,Menlo,monospace;
+  --disp:"Orbitron","Share Tech Mono",ui-monospace,system-ui,sans-serif;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{height:100%}
+body{
+  background:
+    radial-gradient(120% 90% at 50% 45%,#0a1930 0%,var(--bg2) 42%,var(--bg) 100%);
+  color:var(--ink);font-family:var(--mono);overflow:hidden;
+  letter-spacing:.04em;
+}
+#core{position:fixed;inset:0;width:100%;height:100%;display:block}
+
+/* --- atmosphere ------------------------------------------------------ */
+.scan,.vig{position:fixed;inset:0;pointer-events:none}
+.scan{
+  background:repeating-linear-gradient(0deg,
+    rgba(92,225,255,.035) 0 1px, transparent 1px 3px);
+  mix-blend-mode:screen;opacity:.5;
+  animation:drift 9s linear infinite;
+}
+@keyframes drift{to{transform:translateY(3px)}}
+.vig{background:radial-gradient(70% 60% at 50% 50%,transparent 40%,rgba(0,0,0,.72) 100%)}
+
+/* --- frame ----------------------------------------------------------- */
+.hud{position:fixed;inset:0;pointer-events:none;padding:clamp(14px,2vw,30px)}
+.hud > *{pointer-events:auto}
+.corner{position:absolute;width:26px;height:26px;border:1px solid var(--hud)}
+.corner.tl{top:14px;left:14px;border-right:0;border-bottom:0}
+.corner.tr{top:14px;right:14px;border-left:0;border-bottom:0}
+.corner.bl{bottom:14px;left:14px;border-right:0;border-top:0}
+.corner.br{bottom:14px;right:14px;border-left:0;border-top:0}
+
+.label{
+  font-family:var(--disp);font-size:9px;letter-spacing:.34em;
+  color:var(--ink3);text-transform:uppercase;margin-bottom:8px;
+}
+.panel{
+  border-left:1px solid var(--hud);padding-left:12px;
+  backdrop-filter:blur(2px);
+}
+
+/* --- top ------------------------------------------------------------- */
+header{position:absolute;top:clamp(14px,2vw,30px);left:clamp(26px,3vw,46px);right:clamp(26px,3vw,46px);
+  display:flex;justify-content:space-between;align-items:flex-start;gap:24px}
+h1{
+  font-family:var(--disp);font-weight:900;font-size:clamp(22px,3.1vw,42px);
+  letter-spacing:.3em;color:var(--ink);
+  text-shadow:0 0 18px rgba(92,225,255,.55),0 0 60px rgba(92,225,255,.2);
+}
+.sub{font-size:11px;color:var(--ink2);letter-spacing:.2em;margin-top:6px}
+.date{font-size:10px;color:var(--ink3);letter-spacing:.24em;margin-top:3px;text-transform:uppercase}
+.right{text-align:right;width:clamp(232px,23vw,330px);flex:0 0 auto}
+#clock{font-family:var(--disp);font-weight:700;font-size:clamp(18px,2.2vw,28px);
+  color:var(--cy);text-shadow:0 0 14px rgba(92,225,255,.5)}
+.tz{font-size:9px;color:var(--ink3);letter-spacing:.26em}
+
+/* connector rows: a dot AND a word. Colour alone would be unreadable for
+   anyone with a red/green deficiency, and "unverified" is not a shade of
+   green -- it is a different claim. */
+#conns{margin-top:14px;display:flex;flex-direction:column;gap:5px;align-items:flex-end}
+.conn{display:flex;align-items:center;gap:8px;font-size:11px;color:var(--ink2)}
+.conn .nm{min-width:84px;text-align:right;color:var(--ink)}
+.conn .st{font-size:9px;letter-spacing:.18em;text-transform:uppercase;min-width:74px;text-align:left}
+.dot{width:7px;height:7px;border-radius:50%;flex:0 0 auto}
+.s-ok   .dot{background:var(--ok);box-shadow:0 0 9px var(--ok)}
+.s-ok   .st{color:var(--ok)}
+.s-warn .dot{background:var(--warn);box-shadow:0 0 9px var(--warn);animation:blink 1.3s steps(1) infinite}
+.s-warn .st{color:var(--warn)}
+.s-bad  .dot{background:var(--bad);box-shadow:0 0 9px var(--bad);animation:blink 1.3s steps(1) infinite}
+.s-bad  .st{color:var(--bad)}
+.s-off  .dot{background:var(--ink3)}
+.s-off  .st{color:var(--ink3)}
+@keyframes blink{50%{opacity:.25}}
+.used{font-size:9px;color:var(--ink3);min-width:52px;text-align:left}
+
+/* --- left: activity log --------------------------------------------- */
+#logwrap{position:absolute;left:clamp(26px,3vw,46px);top:34%;width:clamp(210px,21vw,320px);max-height:44vh;overflow:hidden;-webkit-mask-image:linear-gradient(180deg,#000 82%,transparent);mask-image:linear-gradient(180deg,#000 82%,transparent)}
+#log{display:flex;flex-direction:column;gap:7px;font-size:11px;color:var(--ink2)}
+#log li{list-style:none;opacity:0;transform:translateX(-8px);
+  animation:reveal .5s ease forwards;line-height:1.45}
+#log li b{color:var(--cy);font-weight:400}
+@keyframes reveal{to{opacity:1;transform:none}}
+
+/* --- right: stats ---------------------------------------------------- */
+#statwrap{margin-top:26px;text-align:left}
+.stat{margin-bottom:14px}
+.stat .row{display:flex;justify-content:space-between;align-items:baseline;font-size:11px;margin-bottom:5px}
+.stat .k{color:var(--ink2)}
+.stat .v{font-family:var(--disp);font-weight:700;color:var(--ink)}
+/* thin mark, rounded data-end, anchored to a visible track baseline */
+.track{height:4px;border-radius:2px;background:rgba(92,225,255,.1);overflow:hidden}
+.fill{height:100%;border-radius:2px;
+  background:linear-gradient(90deg,var(--cy-dim),var(--cy));
+  box-shadow:0 0 10px rgba(92,225,255,.55);
+  width:0;transition:width 1.1s cubic-bezier(.2,.7,.2,1)}
+.stat .note{font-size:9px;color:var(--ink3);margin-top:4px;letter-spacing:.1em}
+
+/* --- bottom --------------------------------------------------------- */
+footer{position:absolute;bottom:clamp(14px,2vw,30px);left:clamp(26px,3vw,46px);right:clamp(26px,3vw,46px)}
+#figs{display:flex;gap:clamp(18px,3.4vw,56px);margin-bottom:16px;flex-wrap:wrap}
+.fig .n{font-family:var(--disp);font-weight:900;font-size:clamp(24px,3.4vw,44px);
+  color:var(--ink);text-shadow:0 0 20px rgba(92,225,255,.4);line-height:1}
+.fig .l{font-size:9px;color:var(--ink3);letter-spacing:.26em;text-transform:uppercase;margin-top:6px}
+#chip{display:none;align-items:center;gap:8px;margin-bottom:14px;
+  border:1px solid rgba(255,179,71,.4);background:rgba(255,179,71,.07);
+  color:var(--warn);font-size:11px;padding:7px 12px;border-radius:2px;width:max-content}
+#chip.on{display:flex}
+#chip .dot{background:var(--warn);box-shadow:0 0 9px var(--warn);animation:blink 1.6s steps(1) infinite}
+
+.bar{display:flex;align-items:center;gap:clamp(18px,3vw,44px);border-top:1px solid var(--hud);padding-top:14px}
+#brief{
+  font-family:var(--disp);font-weight:700;font-size:12px;letter-spacing:.24em;
+  color:var(--bg);background:linear-gradient(180deg,var(--cy),#2aa9cc);
+  border:0;padding:12px 24px;border-radius:2px;cursor:pointer;flex:0 0 auto;
+  box-shadow:0 0 22px rgba(92,225,255,.5),inset 0 1px 0 rgba(255,255,255,.4);
+  transition:box-shadow .2s,transform .1s;
+}
+#brief:hover{box-shadow:0 0 34px rgba(92,225,255,.75)}
+#brief:active{transform:translateY(1px)}
+#brief.speaking{background:linear-gradient(180deg,#ffd27a,var(--warn));
+  box-shadow:0 0 30px rgba(255,179,71,.65)}
+#brief:disabled{opacity:.45;cursor:not-allowed;box-shadow:none}
+#tick{flex:1 1 auto;overflow:hidden;white-space:nowrap;
+  mask-image:linear-gradient(90deg,transparent,#000 6%,#000 94%,transparent)}
+#tick span{display:inline-block;padding-left:100%;font-size:11px;color:var(--ink2);
+  animation:scroll 34s linear infinite}
+@keyframes scroll{to{transform:translateX(-100%)}}
+.closer{font-family:var(--disp);font-weight:700;font-size:clamp(9px,1.05vw,12px);
+  letter-spacing:.22em;color:var(--cy);text-transform:uppercase;flex:0 0 auto;
+  text-shadow:0 0 14px rgba(92,225,255,.45)}
+.empty{font-size:11px;color:var(--ink3);font-style:normal}
+@media (max-width:900px){
+  #logwrap,#statwrap{display:none}
+  header{flex-direction:column}
+  .right{text-align:left;min-width:0}
+  #conns{align-items:flex-start}
+}
+</style>
+</head>
+<body>
+<canvas id="core"></canvas>
+<div class="scan"></div><div class="vig"></div>
+
+<div class="hud">
+  <div class="corner tl"></div><div class="corner tr"></div>
+  <div class="corner bl"></div><div class="corner br"></div>
+
+  <header>
+    <div>
+      <h1>E.V.I.E.</h1>
+      <div class="sub" id="greeting">—</div>
+      <div class="date" id="gen">—</div>
+    </div>
+    <div class="right">
+      <div id="clock">--:--:--</div>
+      <div class="tz" id="tz"></div>
+      <div class="label" style="margin-top:16px;text-align:right">brains</div>
+      <div id="conns"></div>
+      <div id="statwrap" class="panel">
+        <div class="label">coursework</div>
+        <div id="stats"></div>
+      </div>
+    </div>
+  </header>
+
+  <div id="logwrap" class="panel">
+    <div class="label">activity</div>
+    <ul id="log"></ul>
+  </div>
+
+  <footer>
+    <div id="chip"><span class="dot"></span><span id="chiptext"></span></div>
+    <div id="figs"></div>
+    <div class="bar">
+      <button id="brief">BRIEF ME</button>
+      <div id="tick"><span id="ticktext"></span></div>
+      <div class="closer" id="closer">WHAT SHOULD I HANDLE FIRST</div>
+    </div>
+  </footer>
+</div>
+
+<audio id="audio" preload="auto"></audio>
+
+<script src="evie_data.js"></script>
+<script>
+(() => {
+"use strict";
+const D = window.EVIE_DATA || {};
+const $ = (id) => document.getElementById(id);
+const esc = (s) => String(s == null ? "" : s).replace(/[&<>"']/g,
+  c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+
+/* ---------- the sphere ------------------------------------------------ */
+const cv = $("core"), ctx = cv.getContext("2d");
+const N = 680, GOLD = Math.PI * (3 - Math.sqrt(5)), TILT = -0.42;
+const pts = Array.from({length: N}, (_, i) => {
+  const y = 1 - (i / (N - 1)) * 2, r = Math.sqrt(Math.max(0, 1 - y * y)), th = GOLD * i;
+  return [Math.cos(th) * r, y, Math.sin(th) * r];
+});
+let W = 0, H = 0, cx = 0, cy = 0, R = 0;
+
+function size() {
+  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  W = cv.clientWidth; H = cv.clientHeight;
+  cv.width = Math.round(W * dpr); cv.height = Math.round(H * dpr);
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  cx = W / 2; cy = H / 2; R = Math.min(W, H) * 0.215;
+}
+addEventListener("resize", size);
+
+let speaking = false, env = 0, t0 = performance.now();
+
+// Synthetic speech envelope: incommensurate sines plus a slow gate, so it
+// reads as syllables without needing to analyse real audio. Works offline,
+// and works when BRIEF ME has no file to play at all.
+function envelope(t) {
+  if (!speaking) return 0;
+  const s = Math.sin(t * 11.3) * 0.5 + Math.sin(t * 19.7) * 0.3 + Math.sin(t * 4.1) * 0.2;
+  const gate = Math.max(0, Math.sin(t * 2.3) * 0.6 + 0.55);
+  return Math.max(0, Math.min(1, (s * 0.5 + 0.5) * gate));
+}
+
+function frame(now) {
+  const t = (now - t0) / 1000;
+  env += (envelope(t) - env) * 0.22;
+  const breathe = 1 + Math.sin(t * 0.85) * 0.022;
+  const amp = breathe + env * 0.15;
+  const spin = t * (0.19 + env * 0.5);
+
+  ctx.clearRect(0, 0, W, H);
+
+  // glow
+  const g = ctx.createRadialGradient(cx, cy, 0, cx, cy, R * 3.3);
+  g.addColorStop(0, `rgba(92,225,255,${0.2 + env * 0.22})`);
+  g.addColorStop(0.35, "rgba(45,127,157,.07)");
+  g.addColorStop(1, "rgba(0,0,0,0)");
+  ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
+
+  // faint radial rays
+  ctx.save(); ctx.translate(cx, cy); ctx.rotate(t * 0.045);
+  for (let i = 0; i < 48; i++) {
+    ctx.rotate(Math.PI * 2 / 48);
+    ctx.globalAlpha = 0.035 + (i % 3 === 0 ? 0.045 : 0);
+    ctx.strokeStyle = "#5ce1ff"; ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.moveTo(R * 2.05, 0); ctx.lineTo(R * (2.6 + (i % 5) * 0.12), 0); ctx.stroke();
+  }
+  ctx.restore();
+
+  // dashed HUD arcs, three speeds
+  const arcs = [[1.12, 0.30, 0.22, 7], [1.36, -0.19, 0.16, 12], [1.60, 0.11, 0.11, 20]];
+  for (const [rr, sp, al, dash] of arcs) {
+    ctx.save(); ctx.translate(cx, cy); ctx.rotate(t * sp);
+    ctx.setLineDash([dash, dash * 1.7]); ctx.lineWidth = 1;
+    ctx.strokeStyle = `rgba(92,225,255,${al + env * 0.1})`;
+    ctx.beginPath(); ctx.arc(0, 0, R * rr * amp, 0, Math.PI * 2); ctx.stroke();
+    ctx.restore();
+  }
+  ctx.setLineDash([]);
+
+  // outer tick ring
+  ctx.save(); ctx.translate(cx, cy);
+  for (let i = 0; i < 96; i++) {
+    const a = (Math.PI * 2 / 96) * i, big = i % 8 === 0;
+    const r1 = R * 1.92, r2 = r1 + (big ? 10 : 5);
+    ctx.globalAlpha = big ? 0.55 : 0.24;
+    ctx.strokeStyle = "#5ce1ff"; ctx.lineWidth = big ? 1.4 : 1;
+    ctx.beginPath();
+    ctx.moveTo(Math.cos(a) * r1, Math.sin(a) * r1);
+    ctx.lineTo(Math.cos(a) * r2, Math.sin(a) * r2);
+    ctx.stroke();
+  }
+  ctx.restore(); ctx.globalAlpha = 1;
+
+  // the sphere
+  const ct = Math.cos(TILT), st = Math.sin(TILT);
+  const cs = Math.cos(spin), ss = Math.sin(spin);
+  for (let i = 0; i < N; i++) {
+    const p = pts[i];
+    let x = p[0] * cs + p[2] * ss, z = p[2] * cs - p[0] * ss, y = p[1];
+    const y2 = y * ct - z * st, z2 = y * st + z * ct;
+    const persp = 1 / (1.9 - z2 * 0.55);
+    const sx = cx + x * R * amp * persp * 1.9;
+    const sy = cy + y2 * R * amp * persp * 1.9;
+    const depth = (z2 + 1) / 2;
+    ctx.globalAlpha = 0.1 + depth * (0.62 + env * 0.3);
+    ctx.fillStyle = depth > 0.72 ? "#c9f4ff" : "#5ce1ff";
+    const rad = (0.5 + depth * 1.5) * (1 + env * 0.35);
+    ctx.beginPath(); ctx.arc(sx, sy, rad, 0, Math.PI * 2); ctx.fill();
+  }
+  ctx.globalAlpha = 1;
+
+  // core
+  const cr = R * (0.19 + env * 0.1) * amp;
+  const cg = ctx.createRadialGradient(cx, cy, 0, cx, cy, cr * 4);
+  cg.addColorStop(0, `rgba(240,253,255,${0.9 - env * 0.1})`);
+  cg.addColorStop(0.18, `rgba(92,225,255,${0.55 + env * 0.3})`);
+  cg.addColorStop(1, "rgba(92,225,255,0)");
+  ctx.fillStyle = cg;
+  ctx.beginPath(); ctx.arc(cx, cy, cr * 4, 0, Math.PI * 2); ctx.fill();
+
+  // tilted orbital ring + marker
+  ctx.save(); ctx.translate(cx, cy); ctx.rotate(0.38);
+  const ra = R * 1.74 * amp, rb = ra * 0.33;
+  ctx.strokeStyle = `rgba(92,225,255,${0.3 + env * 0.15})`; ctx.lineWidth = 1.2;
+  ctx.beginPath(); ctx.ellipse(0, 0, ra, rb, 0, 0, Math.PI * 2); ctx.stroke();
+  const oa = t * 0.62, mx = Math.cos(oa) * ra, my = Math.sin(oa) * rb;
+  const mg = ctx.createRadialGradient(mx, my, 0, mx, my, 16);
+  mg.addColorStop(0, "#eafcff"); mg.addColorStop(0.3, "rgba(92,225,255,.85)");
+  mg.addColorStop(1, "rgba(92,225,255,0)");
+  ctx.fillStyle = mg; ctx.beginPath(); ctx.arc(mx, my, 16, 0, Math.PI * 2); ctx.fill();
+  ctx.restore();
+
+  requestAnimationFrame(frame);
+}
+
+/* ---------- the HUD, from evie_data.js ------------------------------- */
+const STATE = {
+  ready:      ["s-ok",   "online"],
+  unverified: ["s-warn", "unverified"],
+  exhausted:  ["s-warn", "out of quota"],
+  offline:    ["s-bad",  "offline"],
+  parked:     ["s-off",  "not set up"],
+};
+
+function paint() {
+  $("greeting").textContent = D.greeting || "No greeting recorded.";
+  $("gen").textContent = D.generated ? `generated ${D.generated}` : "never generated";
+  $("closer").textContent = D.closer || "WHAT SHOULD I HANDLE FIRST";
+
+  const conns = $("conns");
+  if (!(D.connectors || []).length) {
+    conns.innerHTML = '<div class="empty">no brains configured</div>';
+  } else {
+    conns.innerHTML = D.connectors.map(c => {
+      const [cls, word] = STATE[c.state] || STATE.parked;
+      return `<div class="conn ${cls}"><span class="nm">${esc(c.name)}</span>`
+           + `<span class="dot"></span><span class="st">${esc(c.label || word)}</span>`
+           + `<span class="used">${esc(c.used || "")}</span></div>`;
+    }).join("");
+  }
+
+  const log = $("log");
+  const lines = D.log || [];
+  if (!lines.length) {
+    log.innerHTML = '<li class="empty" style="opacity:1;transform:none">nothing logged yet</li>';
+  } else {
+    // One line at a time, so it reads as a feed arriving rather than a wall.
+    log.innerHTML = lines.map((l, i) =>
+      `<li style="animation-delay:${0.25 + i * 0.32}s"><b>&rsaquo;</b> ${esc(l)}</li>`).join("");
+  }
+
+  const stats = $("stats");
+  if (!(D.stats || []).length) {
+    stats.innerHTML = '<div class="empty">no Canvas sync yet — run <code>evie canvas sync</code></div>';
+  } else {
+    stats.innerHTML = D.stats.map(s => `
+      <div class="stat">
+        <div class="row"><span class="k">${esc(s.key)}</span><span class="v">${esc(s.value)}</span></div>
+        <div class="track"><div class="fill" data-pct="${Number(s.pct) || 0}"></div></div>
+        ${s.note ? `<div class="note">${esc(s.note)}</div>` : ""}
+      </div>`).join("");
+  }
+
+  $("figs").innerHTML = (D.figures || []).map(f =>
+    `<div class="fig"><div class="n">${esc(f.value)}</div><div class="l">${esc(f.label)}</div></div>`
+  ).join("") || '<div class="empty">no figures</div>';
+
+  if (D.chip) { $("chiptext").textContent = D.chip; $("chip").classList.add("on"); }
+
+  const pri = (D.priorities || []).map((p, i) => `${i + 1}. ${p}`).join("   ·   ");
+  $("ticktext").textContent = D.headline
+    ? `${D.headline}${pri ? "   ·   " + pri : ""}`
+    : (pri || "Nothing on the calendar.");
+
+  // Bars animate from zero after first paint, so the transition is visible.
+  requestAnimationFrame(() => document.querySelectorAll(".fill").forEach(el => {
+    el.style.width = Math.max(0, Math.min(100, Number(el.dataset.pct))) + "%";
+  }));
+}
+
+/* ---------- clock ----------------------------------------------------- */
+function clock() {
+  const d = new Date();
+  $("clock").textContent = d.toTimeString().slice(0, 8);
+  $("tz").textContent = d.toDateString().toUpperCase();
+}
+
+/* ---------- BRIEF ME -------------------------------------------------- */
+// Speaks the priorities that are already on screen. If `evie dashboard
+// --voice` rendered audio, play that; otherwise fall back to the browser's
+// own speech, and if neither exists say so rather than pretending.
+function brief() {
+  const btn = $("brief"), audio = $("audio");
+  const say = [D.greeting, D.headline, ...(D.priorities || []), D.closer]
+    .filter(Boolean).join(". ");
+
+  const start = () => { speaking = true; btn.classList.add("speaking"); btn.textContent = "SPEAKING"; };
+  const stop = () => { speaking = false; btn.classList.remove("speaking"); btn.textContent = "BRIEF ME"; };
+
+  if (speaking) { audio.pause(); try { speechSynthesis.cancel(); } catch (e) {} return stop(); }
+
+  if (D.audio) {
+    audio.src = D.audio;
+    audio.onended = stop; audio.onerror = () => { stop(); speak(); };
+    start(); audio.play().catch(() => { stop(); speak(); });
+    return;
+  }
+  speak();
+
+  function speak() {
+    if (!say || !("speechSynthesis" in window)) {
+      $("ticktext").textContent = "No brief to read. Run `evie dashboard --voice`.";
+      return;
+    }
+    const u = new SpeechSynthesisUtterance(say);
+    u.rate = 1.02; u.onend = stop; u.onerror = stop;
+    start(); speechSynthesis.speak(u);
+  }
+}
+
+size(); paint(); clock(); setInterval(clock, 1000);
+$("brief").addEventListener("click", brief);
+requestAnimationFrame(frame);
+})();
+</script>
+</body>
+</html>

@@ -205,3 +205,78 @@ class TestInvokingOneByName:
     def test_no_skills_means_the_old_behaviour(self, reg):
         assert route("do my weekly deadline sweep", reg, {}).tier == "simple"
         assert route("do my weekly deadline sweep", reg).tier == "simple"
+
+
+class TestTheSubAgents:
+    """Agents are the same problem as skills wearing different frontmatter:
+    markdown that has to reach the vault and survive being edited by hand. So
+    they go through the same overlay, not a second one that drifts from it."""
+
+    def test_there_are_some_and_they_parse(self):
+        found = skills.shipped_agents()
+        assert found, "no agents in evie/defaults/agents"
+        for agent in found:
+            assert agent.name == agent.path.stem
+            assert agent.description
+
+    def test_each_declares_a_tool_allowlist(self):
+        """The allowlist is the point. `researcher` cannot write because Write
+        is absent from its tools, not because it was asked nicely."""
+        import yaml
+
+        for agent in skills.shipped_agents():
+            fm = yaml.safe_load(agent.path.read_text().split("---")[1])
+            assert {"name", "description", "tools", "model"} <= set(fm)
+            assert fm["tools"].strip()
+
+    def test_the_researcher_cannot_touch_anything(self):
+        import yaml
+
+        path = next(a.path for a in skills.shipped_agents() if a.name == "researcher")
+        tools = yaml.safe_load(path.read_text().split("---")[1])["tools"]
+        for dangerous in ("Write", "Edit", "Bash"):
+            assert dangerous not in tools, f"researcher should not have {dangerous}"
+
+    def test_sync_installs_them_where_claude_looks(self, vault):
+        report = skills.sync_agents(vault.root)
+        assert report.added == [a.name for a in skills.shipped_agents()]
+        assert (vault.root / skills.AGENTS_DIR / "researcher.md").is_file()
+
+    def test_running_it_twice_changes_nothing(self, vault):
+        skills.sync_agents(vault.root)
+        assert skills.sync_agents(vault.root).changed == 0
+
+    def test_an_adopted_agent_is_never_overwritten(self, vault):
+        skills.sync_agents(vault.root)
+        mine = skills.installed_agents(vault.root)[0]
+        mine.path.write_text(
+            mine.path.read_text().replace(skills.MANAGED, "") + "\nmy own rules\n"
+        )
+        report = skills.sync_agents(vault.root)
+        assert mine.name in report.yours
+        assert "my own rules" in mine.path.read_text()
+
+    def test_an_improved_agent_reaches_someone_who_already_synced(self, vault):
+        skills.sync_agents(vault.root)
+        one = skills.installed_agents(vault.root)[0]
+        one.path.write_text(one.path.read_text() + "\nstale\n")
+        assert one.name in skills.sync_agents(vault.root).updated
+        assert "stale" not in one.path.read_text()
+
+    def test_skills_and_agents_do_not_collide(self, vault):
+        """Both use the same installer, so a name appearing in both must still
+        land in its own directory."""
+        skills.sync(vault.root)
+        skills.sync_agents(vault.root)
+        assert (vault.root / skills.SKILLS_DIR).is_dir()
+        assert (vault.root / skills.AGENTS_DIR).is_dir()
+        assert {a.name for a in skills.installed_agents(vault.root)} \
+            == {a.name for a in skills.shipped_agents()}
+
+    def test_an_agent_is_not_offered_as_a_voice_trigger(self, vault):
+        """Claude Code routes to an agent by its description; there is nothing
+        for the router to match, and inventing a trigger would send "research
+        this" to a brain instead of to the agent."""
+        skills.sync(vault.root)
+        skills.sync_agents(vault.root)
+        assert set(vault.skill_triggers()) == {s.name for s in skills.shipped()}

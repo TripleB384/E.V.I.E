@@ -255,6 +255,22 @@ class TestRepoHygiene:
             rel = skill.path.relative_to(Path(__file__).resolve().parents[1])
             assert str(rel) in tracked, f"{rel} is not tracked; it ships nowhere"
 
+    def test_the_dashboard_and_agents_are_tracked(self):
+        """Same shape as the .gitignore rule that excluded the default config:
+        correct locally, missing from every clone."""
+        from pathlib import Path
+
+        from evie import skills
+        from evie.config import PACKAGE_DEFAULTS
+
+        root = Path(__file__).resolve().parents[1]
+        tracked = self._tracked()
+        wanted = [PACKAGE_DEFAULTS / "dashboard" / "dashboard.html"]
+        wanted += [a.path for a in skills.shipped_agents()]
+        for path in wanted:
+            rel = str(path.relative_to(root))
+            assert rel in tracked, f"{rel} is not tracked; it ships nowhere"
+
     # Shapes of the credentials this project plausibly touches. Matching the
     # prefix plus a run of key characters keeps `api_key_env: GROQ_API_KEY`
     # and prose like "sk-ant-..." from tripping it.

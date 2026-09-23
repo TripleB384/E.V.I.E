@@ -96,7 +96,7 @@ Takes a minute or two; onnxruntime and the Whisper libraries are large.
 pytest
 ```
 
-565 tests pass, with no hardware and no credentials.
+601 tests pass, with no hardware and no credentials.
 
 **5. Set up and go:**
 
@@ -178,6 +178,7 @@ evie brains list         # health + today's usage for every brain
 evie brains use gemini   # change the default
 evie brains test         # make real calls — does any of this actually work?
 evie skills list         # the jobs she can run, and what to say
+evie dashboard --probe   # the command centre, with today's real numbers
 evie doctor              # what's missing and how to fix it
 ```
 
@@ -315,6 +316,47 @@ Write your own by making a folder with a `SKILL.md` in it. The frontmatter
 needs `name` and `description`; add an `<!-- evie:triggers a | b | c -->` line
 to make it reachable by voice. Triggers must be at least two words — a
 one-word trigger steals every sentence containing that word.
+
+## The command centre
+
+```bash
+evie dashboard --probe --open
+```
+
+A single self-contained HTML page — a rotating point-cloud sphere, a HUD, and
+today's real numbers. Put it on a spare monitor.
+
+The point is that **nothing on it is typed in by hand.** `evie dashboard`
+regenerates `evie_data.js` from state E.V.I.E. already has: which brains are
+reachable and what each has spent today, what Canvas says is due and how stale
+that is, and the last few lines of the daily log.
+
+**It will not show you a state it has not established.** `brains list` can say
+a CLI is *installed*, because the binary is on PATH; it cannot say it is
+*logged in*, because only a real call settles that — and a green dot for a
+brain whose session had silently expired is exactly how one voice session got
+wasted. So a brain reads `unverified` until something proves otherwise, and
+`--probe` is what proves it, with one real inference each. A missing Canvas
+sync says so rather than showing zeros.
+
+`--voice` renders the same priorities the page is showing through your TTS
+engine, so the BRIEF ME button has something to play. Without it the button
+falls back to the browser's own voice.
+
+## Sub-agents
+
+Specialists `claude` hands work to, each with its own context window and its
+own tool allowlist. They live at `~/EVIE/vault/.claude/agents/` and install
+alongside the skills:
+
+| Agent | What it is for |
+|---|---|
+| `researcher` | Looks things up. `Write`, `Edit` and `Bash` are absent from its tools, so it cannot change the vault — by construction, not by instruction. |
+| `scribe` | Turns rough notes into a clean file, alongside the original rather than over it. |
+
+Ask for one by name: *"have the researcher check what the syllabus says about
+citations"*. Same overlay rule as the skills — delete the `evie:managed` line
+and the file is yours.
 
 ## The stack
 
