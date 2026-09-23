@@ -8,6 +8,8 @@ lived.
 import threading
 import time
 
+import pytest
+
 from evie.audio.capture import PushToTalk, accessibility_trusted
 
 
@@ -106,8 +108,13 @@ class TestWarmUp:
 
     def test_whisper_warms_with_audible_noise_not_silence(self, monkeypatch):
         """`transcribe` returns early on anything below the audible
-        threshold, so zeros would never reach the model and warm nothing."""
-        import numpy as np
+        threshold, so zeros would never reach the model and warm nothing.
+
+        numpy is a voice extra, and the whole point of the core install is
+        that it does not need one -- so this skips rather than fails where it
+        is absent, which is exactly what CI runs.
+        """
+        np = pytest.importorskip("numpy")
 
         from evie.ears.stt import Ears
 
