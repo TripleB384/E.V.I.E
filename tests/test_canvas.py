@@ -525,3 +525,102 @@ class TestWrittenDatesDoNotRot:
 
     def test_no_due_date_still_says_so(self):
         assert Deadline("c", "t", None).on() == "no due date"
+
+
+class TestStaleness:
+    """Nothing re-synced Canvas, so she answered confidently from whatever
+    was last pulled by hand. A deadline posted this morning stayed invisible
+    until someone remembered the command."""
+
+    import pytest as _pytest
+
+    def _vault(self, tmp_path, age_hours=None):
+        from evie.memory import Vault
+
+        vault = Vault(tmp_path / "v").ensure("test")
+        if age_hours is not None:
+            write(vault, [Deadline("AI301", "old thing", None)])
+            import os
+
+            old = _dt.datetime.now().timestamp() - age_hours * 3600
+            os.utime(vault.deadlines_path(), (old, old))
+        return vault
+
+    def _settings(self, tmp_path, **canvas):
+        from evie.config import CanvasSettings, Settings
+
+        return Settings(
+            vault=tmp_path / "v",
+            canvas=CanvasSettings(base_url="https://x.instructure.com", **canvas),
+        )
+
+    def test_a_fresh_copy_is_left_alone(self, tmp_path, monkeypatch):
+        """A sync per question would be a network round trip on every
+        "what's due", which is the cost the vault exists to avoid."""
+        from evie.sources.canvas import refresh
+
+        called = []
+        monkeypatch.setattr(Canvas, "deadlines", lambda *a, **k: called.append(1))
+        vault = self._vault(tmp_path, age_hours=1)
+        import asyncio
+
+        assert asyncio.run(refresh(self._settings(tmp_path), vault)) is None
+        assert not called, "it should not have touched the network"
+
+    async def test_a_stale_copy_is_refreshed(self, tmp_path, monkeypatch):
+        from evie.sources.canvas import refresh
+
+        async def fake(self, *a, **k):
+            return [Deadline("AI301", "brand new thing", None)], []
+
+        monkeypatch.setattr(Canvas, "deadlines", fake)
+        monkeypatch.setenv("CANVAS_API_TOKEN", "1773~" + "a" * 40)
+        vault = self._vault(tmp_path, age_hours=99)
+
+        await refresh(self._settings(tmp_path), vault)
+        assert "brand new thing" in vault.deadlines_path().read_text()
+
+    async def test_canvas_being_down_is_not_fatal(self, tmp_path, monkeypatch):
+        """No wifi and an expired token are the likely causes, and neither is
+        a reason to refuse to answer from what she already has."""
+        from evie.sources.canvas import refresh
+
+        async def boom(self, *a, **k):
+            raise CanvasError("cannot reach it")
+
+        monkeypatch.setattr(Canvas, "deadlines", boom)
+        monkeypatch.setenv("CANVAS_API_TOKEN", "1773~" + "a" * 40)
+        vault = self._vault(tmp_path, age_hours=99)
+
+        note = await refresh(self._settings(tmp_path), vault)
+        assert note and "stale" in note
+        assert "old thing" in vault.deadlines_path().read_text(), "kept what it had"
+
+    async def test_an_unexpected_error_is_not_fatal_either(self, tmp_path, monkeypatch):
+        from evie.sources.canvas import refresh
+
+        async def boom(self, *a, **k):
+            raise RuntimeError("something nobody predicted")
+
+        monkeypatch.setattr(Canvas, "deadlines", boom)
+        monkeypatch.setenv("CANVAS_API_TOKEN", "1773~" + "a" * 40)
+        note = await refresh(self._settings(tmp_path), self._vault(tmp_path, 99))
+        assert note and "saved copy" in note
+
+    async def test_zero_hours_turns_it_off(self, tmp_path, monkeypatch):
+        called = []
+        monkeypatch.setattr(Canvas, "deadlines", lambda *a, **k: called.append(1))
+        from evie.sources.canvas import refresh
+
+        vault = self._vault(tmp_path, age_hours=99)
+        assert await refresh(self._settings(tmp_path, refresh_hours=0), vault) is None
+        assert not called
+
+    async def test_no_canvas_configured_does_nothing(self, tmp_path):
+        from evie.config import Settings
+        from evie.sources.canvas import refresh
+
+        # No base_url: Canvas.from_settings would raise, and a first run with
+        # no Canvas at all must not print an error about it.
+        note = await refresh(Settings(vault=tmp_path / "v"), self._vault(tmp_path, 99))
+        assert note is None or "reach" in note

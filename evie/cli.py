@@ -149,11 +149,32 @@ def run(debug: bool, brain: str | None) -> None:
         sys.exit(1)
 
     try:
+        asyncio.run(_refresh_sources(assistant))
+    except Exception as exc:  # noqa: BLE001 - never block startup on a sync
+        console.print(f"[dim]could not refresh Canvas: {escape(str(exc))}[/]")
+
+    try:
         asyncio.run(VoiceLoop(assistant, debug=debug).run())
     except KeyboardInterrupt:
         console.print("\n[dim]Goodbye.[/]")
     except Exception as exc:
         _fail(str(exc), "Run `evie doctor` for the usual causes.")
+
+
+async def _refresh_sources(assistant) -> None:
+    """Pull anything that has gone stale before she answers from it.
+
+    Nothing re-synced Canvas until this existed, so she answered confidently
+    from whatever was last pulled by hand. A note is printed only when
+    something is wrong or something changed -- a silent no-op is the common
+    case and does not deserve a line.
+    """
+    if not assistant.vault:
+        return
+    from .sources.canvas import refresh
+
+    if note := await refresh(assistant.settings, assistant.vault):
+        console.print(f"[dim]{escape(note)}[/]")
 
 
 # -- isolating the brain path -------------------------------------------
@@ -174,6 +195,7 @@ def ask(prompt: str | None, brain: str | None) -> None:
         assistant = Assistant.load()
         if brain:
             assistant.registry.use(brain)
+        await _refresh_sources(assistant)
         async for kind, chunk in assistant.respond(text):
             if kind == "text":
                 console.print(chunk, end="")

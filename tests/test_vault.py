@@ -268,3 +268,38 @@ class TestBriefing:
         classes.mkdir(parents=True, exist_ok=True)
         (classes / "upcoming.md").mkdir()   # a directory where a file should be
         assert "Today is" in vault.briefing()
+
+
+class TestSayingHowOldItIs:
+    """A confident answer from a week-old file is worse than a hedged one,
+    and only she can know to hedge."""
+
+    import datetime as _dt
+
+    def _aged(self, tmp_path, hours):
+        import os
+
+        vault = Vault(tmp_path / "v").ensure("test")
+        classes = vault.root / "classes"
+        classes.mkdir(parents=True, exist_ok=True)
+        (classes / "upcoming.md").write_text("- [ ] **Thu 25 Sep** — Lab 4\n")
+        old = self._dt.datetime.now().timestamp() - hours * 3600
+        os.utime(vault.deadlines_path(), (old, old))
+        return vault
+
+    def test_a_fresh_sync_says_so(self, tmp_path):
+        assert "in the last hour" in self._aged(tmp_path, 0.2).briefing()
+
+    def test_hours_are_counted(self, tmp_path):
+        assert "5 hours ago" in self._aged(tmp_path, 5).briefing()
+
+    def test_yesterday_is_named(self, tmp_path):
+        assert "yesterday" in self._aged(tmp_path, 30).briefing()
+
+    def test_days_are_counted(self, tmp_path):
+        assert "4 days ago" in self._aged(tmp_path, 24 * 4).briefing()
+
+    def test_never_synced_claims_nothing(self, tmp_path):
+        vault = Vault(tmp_path / "v").ensure("test")
+        assert vault.deadlines_age() is None
+        assert "last synced" not in vault.briefing()

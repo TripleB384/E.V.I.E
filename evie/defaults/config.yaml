@@ -40,3 +40,6 @@ canvas:
   token_env: CANVAS_API_TOKEN
   days_back: 7                    # keep recently-missed work visible
   days_ahead: 60
+  # Re-sync when the vault copy is older than this, so a deadline posted
+  # this morning is hers by the afternoon. 0 keeps it manual.
+  refresh_hours: 6

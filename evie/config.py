@@ -138,6 +138,12 @@ class CanvasSettings:
     token_env: str = "CANVAS_API_TOKEN"
     days_back: int = 7
     days_ahead: int = 60
+    # Re-sync when the vault copy is older than this. 0 turns it off and
+    # leaves `evie canvas sync` entirely manual. Six hours means a deadline
+    # added during the school day is hers by the evening, at the cost of a
+    # couple of requests a day against a token with no rate limit worth
+    # worrying about.
+    refresh_hours: float = 6
 
 
 @dataclass

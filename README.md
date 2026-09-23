@@ -96,7 +96,7 @@ Takes a minute or two; onnxruntime and the Whisper libraries are large.
 pytest
 ```
 
-446 tests pass, with no hardware and no credentials.
+457 tests pass, with no hardware and no credentials.
 
 **5. Set up and go:**
 
@@ -259,6 +259,12 @@ this week"* in under a second without a Canvas call or a Claude Code session.
 Dates in the files are absolute, so a file read a week after syncing is still
 true — the spoken answer computes "tomorrow" when you ask, not when you
 synced.
+
+`evie run` and `evie ask` re-sync on their own when the copy is more than
+`canvas.refresh_hours` old (6 by default, `0` to keep it manual), so a
+deadline posted this morning is hers by the afternoon. Canvas being
+unreachable never blocks an answer: she keeps the saved copy, says how old it
+is, and carries on.
 
 **This is not an MCP server, deliberately.** MCP tools only reach agentic
 brains, so every "what's due Thursday" would boot a Claude Code session —

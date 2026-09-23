@@ -365,6 +365,41 @@ def _explain(status: int, body: str, base_url: str) -> CanvasError:
     return CanvasError(f"Canvas returned HTTP {status}: {snippet}")
 
 
+async def refresh(settings, vault) -> str | None:
+    """Re-sync if the vault copy has gone stale. Never fatal.
+
+    Nothing re-synced Canvas until this existed, so she answered confidently
+    from whatever was last pulled by hand -- and a deadline added this morning
+    was invisible until someone remembered to run the command.
+
+    Returns a line worth printing, or None when nothing happened. Canvas being
+    unreachable is not a reason to refuse to answer: the vault copy still
+    works, and `briefing()` already tells her how old it is so she can say so.
+    """
+    hours = float(getattr(getattr(settings, "canvas", None), "refresh_hours", 0) or 0)
+    if hours <= 0:
+        return None
+
+    age = vault.deadlines_age()
+    if age is not None and age < _dt.timedelta(hours=hours):
+        return None
+
+    try:
+        client = Canvas.from_settings(settings)
+        found, _ = await client.deadlines(
+            settings.canvas.days_back, settings.canvas.days_ahead
+        )
+    except CanvasError as exc:
+        # Deliberately soft. The most likely causes are no wifi and an expired
+        # token, and neither should stop her answering from what she has.
+        return f"Canvas is out of reach, so deadlines may be stale ({exc})"
+    except Exception as exc:  # noqa: BLE001 - a sync must never take a turn down
+        return f"Canvas sync failed ({type(exc).__name__}), using the saved copy"
+
+    write(vault, found)
+    return None if age is None else f"Refreshed {len(found)} deadlines from Canvas."
+
+
 # -- writing it down -------------------------------------------------------
 
 MARK_START = "<!-- evie:canvas -->"

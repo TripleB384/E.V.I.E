@@ -134,6 +134,32 @@ class Vault:
     # it is a bill.
     BRIEFING_CAP = 2400
 
+    def deadlines_path(self) -> Path:
+        return self.root / "classes" / "upcoming.md"
+
+    def deadlines_age(self) -> _dt.timedelta | None:
+        """How long since Canvas was last synced, or None if it never was.
+
+        From the file's mtime rather than the "Synced from Canvas ..." line it
+        contains: that line is written for a person to read, and parsing prose
+        back out of a file we wrote as prose is a way to be wrong twice.
+        """
+        try:
+            written = self.deadlines_path().stat().st_mtime
+        except OSError:
+            return None
+        return _dt.datetime.now() - _dt.datetime.fromtimestamp(written)
+
+    @staticmethod
+    def _how_long(age: _dt.timedelta) -> str:
+        hours = age.total_seconds() / 3600
+        if hours < 1:
+            return "in the last hour"
+        if hours < 24:
+            return f"{int(hours)} hours ago"
+        days = int(hours // 24)
+        return "yesterday" if days == 1 else f"{days} days ago"
+
     def briefing(self, *, days: int = 3, cap: int | None = None) -> str:
         """What is true right now, for a brain that cannot open a file.
 
@@ -149,8 +175,12 @@ class Vault:
         today = _dt.date.today()
         parts = [f"Today is {today:%A %-d %B %Y}."]
 
-        if (deadlines := self._read(self.root / "classes" / "upcoming.md")):
-            parts.append("## What is due\n\n" + deadlines)
+        if (deadlines := self._read(self.deadlines_path())):
+            # Say when, always. A confident answer from a week-old file is
+            # worse than a hedged one, and only she can know to hedge.
+            age = self.deadlines_age()
+            stamp = f" (last synced {self._how_long(age)})" if age else ""
+            parts.append(f"## What is due{stamp}\n\n" + deadlines)
         if (log := self.recent_log(days)):
             parts.append(f"## The last {days} days\n\n" + log)
 
