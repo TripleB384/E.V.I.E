@@ -40,6 +40,11 @@ class Assistant:
         self.vault = vault
         self._base_identity = self._identity()
         self.ctx = Context(system=self._base_identity)
+        # Who actually produced the last answer, which is not the same as
+        # `registry.active`: that only moves on a fallback, so a turn the tiers
+        # sent to claude leaves it pointing at groq. A continuation has to
+        # reach the brain that has the context, not the one on duty.
+        self._last_brain: str | None = None
 
     @classmethod
     def load(cls, settings: Settings | None = None) -> "Assistant":
@@ -148,6 +153,13 @@ class Assistant:
         "given, if you can. Do not describe having done it."
     )
 
+    # Thirty-eight seconds of silence between the key going up and the first
+    # word. The work was real -- a Claude Code session reading the vault and
+    # writing a plan -- but from where you are standing it is indistinguishable
+    # from a hang. Only for skills: a named job makes the wait expected, where
+    # a line before every slow turn would just be filler.
+    _RUNNING = "Running the {skill} — give me a minute."
+
     def _identity(self, brain: str | None = None, skill: str | None = None) -> str:
         if self.vault and self.vault.exists and (found := self.vault.identity()):
             base = found
@@ -192,7 +204,13 @@ class Assistant:
         Commands handled by E.V.I.E. herself never reach a model, so a brain
         swap is instant and free.
         """
-        decision: Decision = route(said, self.registry, self._skills())
+        decision: Decision = route(
+            said,
+            self.registry,
+            self._skills(),
+            follow_on=self._last_brain,
+            after_question=self._was_asked_something(),
+        )
 
         if decision.action is Action.QUIT:
             yield "text", "Goodbye."
@@ -221,6 +239,18 @@ class Assistant:
 
         self.ctx.system = identity_for(used)
 
+        # Only a brain that might actually do it. Parked means no key and no
+        # attempt, which is knowable now; a login that has expired is not, so
+        # that case announces and is then corrected by the fallback notice --
+        # each line true when it was said.
+        announce = (
+            decision.skill
+            and self.registry.get(used).agentic
+            and not self.registry.is_parked(used)
+        )
+        if announce:
+            yield "notice", self._RUNNING.format(skill=decision.skill.replace("-", " "))
+
         async for kind, chunk in self.registry.stream(
             decision.text, self.ctx, brain=decision.brain, system_for=identity_for
         ):
@@ -231,7 +261,20 @@ class Assistant:
                 yield "notice", chunk
                 used = self.registry.active
 
+        self._last_brain = used
         self._remember(said, "".join(spoken), used)
+
+    def _was_asked_something(self) -> bool:
+        """Whether her last reply ended by asking something.
+
+        "Yes" is a continuation in reply to "want me to go through the rest?"
+        and plain agreement otherwise, and the difference decides whether it is
+        worth half a minute of Claude Code to answer.
+        """
+        for turn in reversed(self.ctx.transcript):
+            if turn.role == "assistant":
+                return turn.text.rstrip().endswith("?")
+        return False
 
     def _skills(self) -> dict[str, tuple[str, ...]]:
         """What the vault can be asked to run.

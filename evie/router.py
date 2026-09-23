@@ -245,6 +245,43 @@ def names_a_skill(text: str, skills: Mapping[str, Sequence[str]]) -> str | None:
     return None
 
 
+# --- continuations --------------------------------------------------------
+#
+# "Yes." is meaningless on its own, and routing it by difficulty sends it to
+# whichever brain the tier table names rather than the one that just spoke.
+# Live: claude ran the deadline sweep, wrote the plan and asked "want me to go
+# through the rest?" -- and "Yes." scored `normal`, went to groq, which could
+# not open the file claude had just written, re-derived the whole thing from
+# the briefing, and contradicted the turn before it.
+
+# Unambiguous on their own: these ask for more of what was just said.
+_CONTINUE = re.compile(
+    _FILLER + r"(?:"
+    r"(?:go|carry)\s+(?:on|ahead)|keep\s+going|continue"
+    r"|(?:tell|give|read)\s+me\s+(?:the\s+rest|more)"
+    r"|(?:what|how)\s+(?:about\s+)?else|what(?:'?s| is)\s+the\s+rest"
+    r"|the\s+rest(?:\s+please)?|(?:and\s+)?then\s+what|more\s+please"
+    r")\b[\s.!?]*$",
+    re.IGNORECASE,
+)
+# Agreement, which is only a continuation in reply to a question. Otherwise
+# "yeah" is acknowledgement, and sending it to an agentic brain costs half a
+# minute and real plan allowance to answer nothing.
+_AFFIRMATIVE = re.compile(
+    _FILLER + r"(?:ye(?:s|ah|p|up)|sure|please\s+do|do\s+it|go\s+for\s+it"
+    r"|sounds\s+good|that\s+would\s+be\s+great)"
+    r"[\s.!,]*(?:please)?[\s.!?]*$",
+    re.IGNORECASE,
+)
+
+
+def is_continuation(text: str, *, after_question: bool = False) -> bool:
+    """Whether this asks for more of the last answer rather than something new."""
+    if _CONTINUE.match(text):
+        return True
+    return after_question and bool(_AFFIRMATIVE.match(text))
+
+
 def strip_address(text: str) -> str:
     return _ADDRESS.sub("", text).strip()
 
@@ -285,12 +322,19 @@ def route(
     said: str,
     registry: BrainRegistry,
     skills: Mapping[str, Sequence[str]] | None = None,
+    *,
+    follow_on: str | None = None,
+    after_question: bool = False,
 ) -> Decision:
     """Turn a transcribed utterance into something to do.
 
     `skills` maps an installed skill's name to the phrases that invoke it.
     Passed in rather than read here, so the router keeps no knowledge of where
     the vault is.
+
+    `follow_on` is the brain that answered last, and `after_question` whether
+    its answer ended by asking something. Together they keep a continuation
+    with the brain that has the context for it.
     """
     text = strip_address(said)
     if not text:
@@ -338,6 +382,11 @@ def route(
         return Decision(
             Action.ANSWER, text, registry.for_tier("agentic"), "agentic", named
         )
+
+    # After the skill check, so "yes, do my weekly deadline sweep" still runs
+    # the skill rather than going back to whoever spoke last.
+    if follow_on and is_continuation(text, after_question=after_question):
+        return Decision(Action.ANSWER, text, follow_on, "continue")
 
     tier = complexity(text)
     return Decision(Action.ANSWER, text, registry.for_tier(tier), tier)

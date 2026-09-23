@@ -28,14 +28,24 @@ class Timings:
 
     stt: float = 0.0
     first_token: float = 0.0
+    # Time to the first chunk of the *answer*, as opposed to the first chunk of
+    # anything. They differ when she speaks before the brain does -- announcing
+    # a skill, or naming a fallback -- and without this the announcement hides
+    # exactly what it was added to cover: a sweep reported `first token 1.7s`
+    # while the brain took 38 seconds.
+    brain: float = 0.0
     first_audio: float = 0.0
     total: float = 0.0
     stages: list[str] = field(default_factory=list)
 
     def render(self) -> str:
+        # Only when something was said first; otherwise it repeats first token
+        # on every ordinary turn.
+        spoke_first = self.brain - self.first_token > 0.05
         return (
             f"stt {self.stt:.2f}s · first token {self.first_token:.2f}s · "
-            f"first audio {self.first_audio:.2f}s · total {self.total:.2f}s"
+            + (f"brain {self.brain:.2f}s · " if spoke_first else "")
+            + f"first audio {self.first_audio:.2f}s · total {self.total:.2f}s"
         )
 
 
@@ -116,12 +126,12 @@ class VoiceLoop:
 
     async def _answer(self, said, speaker, timings, turn_start) -> bool:
         """Stream one answer to the speakers. Returns True if she should quit."""
-        first_token_at = first_audio_at = None
+        first_token_at = first_audio_at = brain_at = None
         should_quit = False
         printed: list[str] = []
 
         async def text_stream():
-            nonlocal first_token_at, should_quit
+            nonlocal first_token_at, brain_at, should_quit
             async for kind, chunk in self.assistant.respond(said):
                 if kind == "meta":
                     should_quit = should_quit or chunk == "quit"
@@ -133,6 +143,8 @@ class VoiceLoop:
                 if kind == "notice":
                     self.console.print(f"[yellow]{chunk}[/]")
                 else:
+                    if brain_at is None:
+                        brain_at = time.perf_counter()
                     printed.append(chunk)
                 yield chunk
 
@@ -149,5 +161,6 @@ class VoiceLoop:
         if printed:
             self.console.print(f"[bold cyan]evie:[/] {''.join(printed).strip()}")
         timings.first_token = (first_token_at or turn_start) - turn_start
+        timings.brain = (brain_at or first_token_at or turn_start) - turn_start
         timings.first_audio = (first_audio_at or turn_start) - turn_start
         return should_quit

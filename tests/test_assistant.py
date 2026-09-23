@@ -516,3 +516,140 @@ class TestASkillThatCannotRunSaysSo:
         skills.sync(vault.root)
         await a.ask("what's the capital of Peru")
         assert "did not run" not in a.ctx.system
+
+
+class TestTheBrainThatOfferedGetsTheFollowUp:
+    """`registry.active` is not the brain that just answered.
+
+    It only moves on a fallback, so a turn the tiers sent to claude leaves it
+    pointing at groq -- which is how "Yes." after claude's "want me to go
+    through the rest?" landed on a brain that could not open the file claude
+    had written.
+    """
+
+    def _assistant(self, tmp_path, claude_text="Here it is. Want the rest?"):
+        vault = Vault(tmp_path / "v").ensure("test")
+        reg = BrainRegistry(
+            {"claude": FakeBrain("claude", agentic=True, text=claude_text),
+             "groq": FakeBrain("groq", agentic=False, text="From groq.")},
+            default="groq",
+            tiers={"simple": "groq", "normal": "groq", "agentic": "claude"},
+        )
+        return Assistant(reg, Settings(vault=vault.root), vault), vault
+
+    async def test_yes_goes_back_to_claude(self, tmp_path):
+        from evie import skills
+
+        a, vault = self._assistant(tmp_path)
+        skills.sync(vault.root)
+
+        await a.ask("do my weekly deadline sweep")
+        assert a._last_brain == "claude"
+        await a.ask("Yes.")
+        assert a.registry.get("claude").calls == 2
+        assert a.registry.get("groq").calls == 0
+
+    async def test_agreement_with_no_question_asked_does_not(self, tmp_path):
+        """The control. Routing every "yeah" to an agentic brain would cost
+        half a minute and real plan allowance to answer nothing."""
+        from evie import skills
+
+        a, vault = self._assistant(tmp_path, claude_text="Here is the plan.")
+        skills.sync(vault.root)
+
+        await a.ask("do my weekly deadline sweep")
+        await a.ask("Yes.")
+        assert a.registry.get("groq").calls == 1
+
+    async def test_an_explicit_continuation_needs_no_question(self, tmp_path):
+        from evie import skills
+
+        a, vault = self._assistant(tmp_path, claude_text="Here is the plan.")
+        skills.sync(vault.root)
+
+        await a.ask("do my weekly deadline sweep")
+        await a.ask("tell me the rest")
+        assert a.registry.get("claude").calls == 2
+
+    async def test_the_first_turn_of_a_session_has_nobody_to_follow(self, tmp_path):
+        a, _ = self._assistant(tmp_path)
+        assert a._last_brain is None
+        await a.ask("go on")
+        assert a.registry.get("groq").calls == 1
+
+    async def test_an_intercept_does_not_become_the_last_brain(self, tmp_path):
+        """A swap confirmation is spoken by E.V.I.E. herself, so there is no
+        brain behind it to follow up with."""
+        a, _ = self._assistant(tmp_path)
+        await a.ask("what's the capital of Peru")
+        await a.ask("switch to claude")
+        assert a._last_brain == "groq"
+
+
+class TestSheSaysSomethingBeforeALongJob:
+    """Thirty-eight seconds between the key going up and the first word. The
+    work was real; from where you are standing it is a hang."""
+
+    def _assistant(self, tmp_path, claude_fails=False):
+        vault = Vault(tmp_path / "v").ensure("test")
+        claude = FakeBrain("claude", agentic=True)
+        if claude_fails:
+            claude.fail = BrainExhausted("out of quota")
+        reg = BrainRegistry(
+            {"claude": claude, "groq": FakeBrain("groq", agentic=False)},
+            default="groq",
+            fallback=["claude", "groq"],
+            tiers={"simple": "groq", "normal": "groq", "agentic": "claude"},
+        )
+        return Assistant(reg, Settings(vault=vault.root), vault), vault
+
+    async def test_a_skill_run_is_announced(self, tmp_path):
+        from evie import skills
+
+        a, vault = self._assistant(tmp_path)
+        skills.sync(vault.root)
+        reply = await a.ask("do my weekly deadline sweep")
+        assert any("weekly deadline sweep" in n for n in reply.notices)
+        assert not any("-" in n.split("Running the ")[1][:24]
+                       for n in reply.notices if "Running the" in n), \
+            "the slug should be spoken as words"
+
+    async def test_it_comes_before_the_answer(self, tmp_path):
+        from evie import skills
+
+        a, vault = self._assistant(tmp_path)
+        skills.sync(vault.root)
+        kinds = [kind async for kind, _ in a.respond("do my weekly deadline sweep")]
+        assert kinds[0] == "notice", "nothing was said before the wait"
+
+    async def test_an_ordinary_question_is_not_announced(self, tmp_path):
+        from evie import skills
+
+        a, vault = self._assistant(tmp_path)
+        skills.sync(vault.root)
+        reply = await a.ask("what's the capital of Peru")
+        assert not any("Running" in n for n in reply.notices)
+
+    async def test_a_skill_that_then_fails_is_corrected_out_loud(self, tmp_path):
+        """A login that has expired cannot be known about before the call, so
+        she does announce it. What matters is that the correction follows in
+        the same breath: each line was true when it was said."""
+        from evie import skills
+
+        a, vault = self._assistant(tmp_path, claude_fails=True)
+        skills.sync(vault.root)
+        reply = await a.ask("do my weekly deadline sweep")
+        assert "Running the" in reply.notices[0]
+        assert "Switching to groq" in reply.notices[1]
+        assert "did not run" in a.ctx.system, "and the brain knows not to fake it"
+
+    async def test_a_parked_brain_is_never_promised(self, tmp_path):
+        """Parked means no key and no attempt. That is knowable without a
+        call, so promising it would be a promise we know we cannot keep."""
+        from evie import skills
+
+        a, vault = self._assistant(tmp_path)
+        skills.sync(vault.root)
+        a.registry.parked["claude"] = "$ANTHROPIC_API_KEY is not set"
+        reply = await a.ask("do my weekly deadline sweep")
+        assert not any("Running the" in n for n in reply.notices)

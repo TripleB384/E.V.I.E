@@ -464,3 +464,75 @@ class TestALeadingWordBreaksTheSwitch:
         assert route(
             "explain why you should switch back to Claude", reg
         ).action is Action.ANSWER
+
+
+class TestAFollowUpStaysWithTheBrainThatOfferedIt:
+    """Said out loud, after claude ran the deadline sweep:
+
+        evie: ...Want me to go through the rest?
+        you:  Yes.
+
+    "Yes." scores `normal`, `normal` is groq, so the brain that wrote the plan
+    offered to continue and a different brain took the question. groq could not
+    open the file claude had just written, so it re-derived from the briefing
+    and contradicted the turn before it -- claude said let one assignment slip,
+    groq said polish it and push a different one.
+    """
+
+    import pytest as _pytest
+
+    @_pytest.mark.parametrize(
+        "said",
+        ["go on", "go ahead", "keep going", "carry on", "continue",
+         "tell me the rest", "tell me more", "what else", "the rest",
+         "and then what", "so keep going"],
+    )
+    def test_an_explicit_continuation_needs_no_question(self, reg, said):
+        assert route(said, reg, follow_on="claude").brain == "claude"
+
+    @_pytest.mark.parametrize(
+        "said", ["Yes.", "yes", "yeah", "sure", "please do", "do it", "yes please"]
+    )
+    def test_agreement_counts_only_after_a_question(self, reg, said):
+        """Otherwise "yeah" is acknowledgement, and half a minute of Claude
+        Code to answer nothing."""
+        assert route(said, reg, follow_on="claude").brain != "claude"
+        assert route(
+            said, reg, follow_on="claude", after_question=True
+        ).brain == "claude"
+
+    @_pytest.mark.parametrize(
+        "said",
+        ["yes I finished the essay", "sure, what's the capital of Peru",
+         "continue the essay for me", "what else is due on Friday"],
+    )
+    def test_a_real_request_is_not_a_continuation(self, reg, said):
+        decision = route(said, reg, follow_on="claude", after_question=True)
+        assert decision.tier != "continue", f"{said!r} was taken as a follow-up"
+
+    def test_a_skill_still_wins(self, reg):
+        """"yes, do my weekly deadline sweep" runs the skill rather than going
+        back to whoever spoke last."""
+        skills = {"weekly-deadline-sweep": ("weekly deadline sweep",)}
+        decision = route(
+            "yes do my weekly deadline sweep", reg, skills,
+            follow_on="groq", after_question=True,
+        )
+        assert decision.skill == "weekly-deadline-sweep"
+        assert decision.tier == "agentic"
+
+    def test_a_switch_still_wins(self, reg):
+        assert route(
+            "go back to groq", reg, follow_on="claude", after_question=True
+        ).action is Action.REPLY
+
+    def test_without_a_last_brain_nothing_changes(self, reg):
+        """Every existing caller passes none, and the first turn of a session
+        has none to pass."""
+        assert route("go on", reg).tier != "continue"
+        assert route("yes", reg, after_question=True).tier != "continue"
+
+    def test_it_costs_no_model_call_to_decide(self, reg_full):
+        for said in ("go on", "tell me the rest", "yes"):
+            route(said, reg_full, follow_on="claude", after_question=True)
+        assert not reg_full._counts

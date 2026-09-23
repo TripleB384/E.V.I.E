@@ -96,7 +96,7 @@ Takes a minute or two; onnxruntime and the Whisper libraries are large.
 pytest
 ```
 
-526 tests pass, with no hardware and no credentials.
+565 tests pass, with no hardware and no credentials.
 
 **5. Set up and go:**
 

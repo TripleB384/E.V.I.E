@@ -128,3 +128,37 @@ class TestWarmUp:
         monkeypatch.setattr(Ears, "transcribe", capture)
         ears.warm()
         assert seen["peak"] > 1e-4, "silence would not reach the model"
+
+
+class TestTheDebugLineStillShowsTheWait:
+    """Adding a spoken acknowledgement before a long job nearly destroyed the
+    thing that measured it.
+
+    `first_token` is set on the first chunk of *any* kind, so with "Running
+    the weekly deadline sweep" in front of it, a run where the brain took 38
+    seconds reported `first token 1.70s`. The number that mattered vanished
+    behind the fix for the problem it described.
+    """
+
+    def test_an_ordinary_turn_reads_as_it_always_did(self):
+        from evie.loop import Timings
+
+        line = Timings(
+            stt=1.63, first_token=2.80, brain=2.80, first_audio=4.97, total=55.11
+        ).render()
+        assert "brain" not in line, "it repeats first token, so it is noise"
+        assert line.startswith("stt 1.63s · first token 2.80s · first audio")
+
+    def test_speaking_first_surfaces_the_real_latency(self):
+        from evie.loop import Timings
+
+        line = Timings(
+            stt=1.63, first_token=1.70, brain=38.20, first_audio=2.52, total=57.85
+        ).render()
+        assert "brain 38.20s" in line
+        assert "first token 1.70s" in line, "both, or you cannot see the gap"
+
+    def test_a_turn_that_produced_nothing_does_not_invent_a_number(self):
+        from evie.loop import Timings
+
+        assert "brain" not in Timings().render()
