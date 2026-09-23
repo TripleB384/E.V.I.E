@@ -52,28 +52,10 @@ _ADDRESS = re.compile(
     re.IGNORECASE,
 )
 
-# Speech comes out inflected. "Switched to Gemini", "switching to Gemini" and
-# "let's use Gemini" all mean the same thing, and matching only bare stems sent
-# every one of them to a model.
-_SWITCH = re.compile(
-    r"^(?:please\s+|let'?s\s+|can\s+you\s+|could\s+you\s+)*"
-    r"(?:switch|swap|flip|jump|mov)(?:e|ed|es|ing)?\s+"
-    r"(?:over\s+|back\s+)?(?:to|two|too)\s+(?:the\s+)?(.+?)"
-    r"(?:\s+brain|\s+model|\s+please|\s+instead)?[.!?]*$",
-    re.IGNORECASE,
-)
-_USE = re.compile(
-    r"^(?:please\s+|let'?s\s+|can\s+you\s+|could\s+you\s+)*"
-    r"(?:chang(?:e|ed|es|ing)|us(?:e|ed|es|ing)|run(?:ning)?\s+on|"
-    r"go(?:ing)?\s+(?:back\s+)?to)\s+"
-    r"(?:over\s+)?(?:to\s+)?(?:the\s+)?(.+?)"
-    r"(?:\s+brain|\s+model|\s+instead|\s+please)?[.!?]*$",
-    re.IGNORECASE,
-)
 # Leading filler. Speech does not start where the command starts: "and then
 # tell me which brain you're using", "if you go back to auto routing" and
 # "so what brain are you on" all carry the real request in the middle, and
-# every start-anchored pattern below missed all three.
+# every start-anchored pattern here missed all three.
 #
 # Bounded on purpose — it swallows conjunctions, politeness and a short lead-in
 # verb, not arbitrary text, so "explain why you should switch back to Claude"
@@ -85,6 +67,38 @@ _FILLER = (
     r"my\s+bad|sorry|just|quick(?:ly)?|maybe|can\s+you|could\s+you|"
     r"would\s+you|will\s+you|do\s+you\s+know|tell\s+me|remind\s+me|"
     r"let'?s|if(?:\s+you)?)\b[\s,.:;-]*){0,4}"
+)
+# "no" is filler, because "no, switch to Claude" is a correction and means
+# switch. "No, don't switch to Claude" is the opposite in the same words, so
+# any pattern that *acts* on what it matches has to refuse the negated form:
+# the filler eats the "no" quite happily and leaves a command behind.
+_NOT_NEGATED = r"(?!(?:do\s*not|don'?t|never|no\s+need|rather\s+not|instead\s+of)\b)"
+
+# Speech comes out inflected. "Switched to Gemini", "switching to Gemini" and
+# "let's use Gemini" all mean the same thing, and matching only bare stems sent
+# every one of them to a model.
+#
+# These take _FILLER for the same reason the question patterns do, and went a
+# release without it: the two patterns that actually *perform* a switch kept a
+# narrow politeness prefix while every pattern that only reports state was
+# widened. So "Now switch to Claude" — the ordinary way to say it — reached a
+# model, which answered "I'm staying right here on the current model" and
+# settled a routing question it has no authority over. Any leading word at all
+# broke the command, not just an unusual one.
+_SWITCH = re.compile(
+    _FILLER + _NOT_NEGATED +
+    r"(?:switch|swap|flip|jump|mov)(?:e|ed|es|ing)?\s+"
+    r"(?:over\s+|back\s+)?(?:to|two|too)\s+(?:the\s+)?(.+?)"
+    r"(?:\s+brain|\s+model|\s+please|\s+instead)?[.!?]*$",
+    re.IGNORECASE,
+)
+_USE = re.compile(
+    _FILLER + _NOT_NEGATED +
+    r"(?:chang(?:e|ed|es|ing)|us(?:e|ed|es|ing)|run(?:ning)?\s+on|"
+    r"go(?:ing)?\s+(?:back\s+)?to)\s+"
+    r"(?:over\s+)?(?:to\s+)?(?:the\s+)?(.+?)"
+    r"(?:\s+brain|\s+model|\s+instead|\s+please)?[.!?]*$",
+    re.IGNORECASE,
 )
 
 # Asking to be told who is answering, in some form. Two earlier versions were

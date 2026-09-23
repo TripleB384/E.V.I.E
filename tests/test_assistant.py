@@ -190,6 +190,17 @@ class TestSheKnowsWhichBrainSheIs:
         await a.ask("hello")
         assert "No brain is pinned" in a.ctx.system
 
+    async def test_it_is_told_it_cannot_switch_brains_itself(self, tmp_path):
+        """The other half of the same problem. "No switch to Claude" missed the
+        intercept, reached groq, and groq replied "I'm staying right here on
+        the current model" -- a routing decision it had no part in, stated as
+        settled. Widening the regex catches that phrasing; this is what
+        catches the next one."""
+        a = self._assistant(tmp_path)
+        await a.ask("what's the capital of Peru")
+        assert "cannot change which brain answers" in a.ctx.system
+        assert "Never confirm a switch" in a.ctx.system
+
     async def test_a_pin_that_could_not_be_honoured_says_so(self, tmp_path):
         """Otherwise the answer to "which brain" contradicts the switch
         confirmation the user heard two turns ago."""

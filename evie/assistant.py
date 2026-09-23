@@ -66,6 +66,12 @@ class Assistant:
     # said "I'm running on OpenAI's GPT-4 model" three times in one session.
     # No regex fixes that, because the phrasings are unbounded -- the only
     # real fix is telling the brain the truth before it is asked.
+    #
+    # The same applies to a missed *switch*. "No switch to Claude" fell through
+    # to groq, which replied "I'm staying right here on the current model" --
+    # a routing decision it had no part in, stated as fact. A widened regex
+    # catches that phrasing; the next one is caught by the brain knowing it has
+    # no say.
     _WHOAMI = (
         "\n\n## Which brain you are, right now\n\n"
         "This turn is being answered by the brain named {name} — {what}. "
@@ -75,6 +81,12 @@ class Assistant:
         "about your own identity describes the model, not this assistant, and "
         "saying it would be wrong. You are E.V.I.E. either way; {name} is "
         "only what is thinking for you at the moment."
+        "\n\nYou also cannot change which brain answers: that is settled "
+        "before you are called. So if this turn asks you to switch brains, to "
+        "stay on one, or to stop using one, the request did not reach the part "
+        "that does it — say plainly that it did not go through and ask them to "
+        "say it again. Never confirm a switch, and never say what you have "
+        "decided to run on. You decided nothing."
     )
 
     def _routing_note(self, name: str) -> str:

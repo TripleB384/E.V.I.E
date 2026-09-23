@@ -396,3 +396,71 @@ class TestSheClaimsSwitchesThatNeverHappened:
         # Widening the intercepts must not start eating real questions:
         # answering "I'm running on claude" to any of these is nonsense.
         assert route(said, reg).action is Action.ANSWER
+
+
+class TestALeadingWordBreaksTheSwitch:
+    """Every pattern that only *reports* state was made filler-tolerant; the
+    two that actually perform a switch were not, and went a release that way.
+
+    Said out loud: "No switch to Claude." It reached groq, which replied "Got
+    it—I'm staying right here on the current model" and settled a routing
+    question it has no part in. Nothing switched. It is not a mishearing of an
+    unusual word -- any leading word at all broke the command, and "Now switch
+    to X" is how a person actually says it.
+    """
+
+    import pytest as _pytest
+
+    @_pytest.mark.parametrize(
+        "said",
+        [
+            "No switch to Claude",          # the one that failed out loud
+            "Now switch to Claude",
+            "So switch to Claude",
+            "Okay switch to Claude",
+            "wait, switch to Claude",
+            "um switch to Claude",
+            "and then switch to Claude",
+            "actually switch to Claude",
+            "yeah go to claude",
+            "just use claude",
+            "my bad, use Claude",
+        ],
+    )
+    def test_filler_before_the_verb_is_still_a_switch(self, reg, said):
+        reg.use("groq")
+        decision = route(said, reg)
+        assert decision.action is Action.REPLY, f"{said!r} reached a model"
+        assert reg.active == "claude"
+
+    @_pytest.mark.parametrize(
+        "said",
+        [
+            "don't switch to Claude",
+            "no don't switch to Claude",
+            "do not switch to Claude",
+            "never switch to Claude",
+            "I'd rather not switch to Claude",
+            "don't use Claude",
+        ],
+    )
+    def test_a_negated_request_is_not_a_command(self, reg, said):
+        """"no" is filler, so without a guard "no don't switch to Claude"
+        becomes "switch to Claude" -- the exact reverse of what was asked."""
+        reg.use("groq")
+        assert route(said, reg).action is Action.ANSWER, f"{said!r} switched"
+        assert reg.active == "groq", "nothing should have moved"
+
+    def test_none_of_it_costs_a_model_call(self, reg_full):
+        """The whole point: a swap is local and free. A counter that moved
+        means an utterance reached a provider."""
+        for said in ("Now switch to Claude", "so use groq",
+                     "okay switch to gemini", "and then go to claude"):
+            route(said, reg_full)
+        assert not reg_full._counts, f"model calls: {dict(reg_full._counts)}"
+
+    def test_a_question_that_merely_contains_switch_still_reaches_a_model(self, reg):
+        # The guard that stops the widening from eating real questions.
+        assert route(
+            "explain why you should switch back to Claude", reg
+        ).action is Action.ANSWER
