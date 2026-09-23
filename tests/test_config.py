@@ -239,6 +239,22 @@ class TestRepoHygiene:
             f"whatever this file said. Run: git rm --cached {path}"
         )
 
+    def test_every_shipped_skill_is_actually_tracked(self):
+        """A shipped default that git does not track reaches nobody.
+
+        The same shape as the .gitignore rule that excluded the default
+        config: correct on the machine it was written on, missing from every
+        clone, and invisible to any test that only exercises the code.
+        """
+        from pathlib import Path
+
+        from evie import skills
+
+        tracked = self._tracked()
+        for skill in skills.shipped():
+            rel = skill.path.relative_to(Path(__file__).resolve().parents[1])
+            assert str(rel) in tracked, f"{rel} is not tracked; it ships nowhere"
+
     # Shapes of the credentials this project plausibly touches. Matching the
     # prefix plus a run of key characters keeps `api_key_env: GROQ_API_KEY`
     # and prose like "sk-ant-..." from tripping it.

@@ -14,6 +14,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 from enum import Enum
+from typing import Mapping, Sequence
 
 from .brains import BrainRegistry
 from .brains.registry import UnknownBrain
@@ -32,6 +33,7 @@ class Decision:
     text: str = ""            # the prompt to send, or the reply to speak
     brain: str | None = None  # force a specific brain for this turn
     tier: str = "normal"      # how hard we judged it, for --debug
+    skill: str | None = None  # the skill this names, if it names one
 
 
 # Leading "evie, ..." is address, not content.
@@ -52,28 +54,10 @@ _ADDRESS = re.compile(
     re.IGNORECASE,
 )
 
-# Speech comes out inflected. "Switched to Gemini", "switching to Gemini" and
-# "let's use Gemini" all mean the same thing, and matching only bare stems sent
-# every one of them to a model.
-_SWITCH = re.compile(
-    r"^(?:please\s+|let'?s\s+|can\s+you\s+|could\s+you\s+)*"
-    r"(?:switch|swap|flip|jump|mov)(?:e|ed|es|ing)?\s+"
-    r"(?:over\s+|back\s+)?(?:to|two|too)\s+(?:the\s+)?(.+?)"
-    r"(?:\s+brain|\s+model|\s+please|\s+instead)?[.!?]*$",
-    re.IGNORECASE,
-)
-_USE = re.compile(
-    r"^(?:please\s+|let'?s\s+|can\s+you\s+|could\s+you\s+)*"
-    r"(?:chang(?:e|ed|es|ing)|us(?:e|ed|es|ing)|run(?:ning)?\s+on|"
-    r"go(?:ing)?\s+(?:back\s+)?to)\s+"
-    r"(?:over\s+)?(?:to\s+)?(?:the\s+)?(.+?)"
-    r"(?:\s+brain|\s+model|\s+instead|\s+please)?[.!?]*$",
-    re.IGNORECASE,
-)
 # Leading filler. Speech does not start where the command starts: "and then
 # tell me which brain you're using", "if you go back to auto routing" and
 # "so what brain are you on" all carry the real request in the middle, and
-# every start-anchored pattern below missed all three.
+# every start-anchored pattern here missed all three.
 #
 # Bounded on purpose — it swallows conjunctions, politeness and a short lead-in
 # verb, not arbitrary text, so "explain why you should switch back to Claude"
@@ -85,6 +69,38 @@ _FILLER = (
     r"my\s+bad|sorry|just|quick(?:ly)?|maybe|can\s+you|could\s+you|"
     r"would\s+you|will\s+you|do\s+you\s+know|tell\s+me|remind\s+me|"
     r"let'?s|if(?:\s+you)?)\b[\s,.:;-]*){0,4}"
+)
+# "no" is filler, because "no, switch to Claude" is a correction and means
+# switch. "No, don't switch to Claude" is the opposite in the same words, so
+# any pattern that *acts* on what it matches has to refuse the negated form:
+# the filler eats the "no" quite happily and leaves a command behind.
+_NOT_NEGATED = r"(?!(?:do\s*not|don'?t|never|no\s+need|rather\s+not|instead\s+of)\b)"
+
+# Speech comes out inflected. "Switched to Gemini", "switching to Gemini" and
+# "let's use Gemini" all mean the same thing, and matching only bare stems sent
+# every one of them to a model.
+#
+# These take _FILLER for the same reason the question patterns do, and went a
+# release without it: the two patterns that actually *perform* a switch kept a
+# narrow politeness prefix while every pattern that only reports state was
+# widened. So "Now switch to Claude" — the ordinary way to say it — reached a
+# model, which answered "I'm staying right here on the current model" and
+# settled a routing question it has no authority over. Any leading word at all
+# broke the command, not just an unusual one.
+_SWITCH = re.compile(
+    _FILLER + _NOT_NEGATED +
+    r"(?:switch|swap|flip|jump|mov)(?:e|ed|es|ing)?\s+"
+    r"(?:over\s+|back\s+)?(?:to|two|too)\s+(?:the\s+)?(.+?)"
+    r"(?:\s+brain|\s+model|\s+please|\s+instead)?[.!?]*$",
+    re.IGNORECASE,
+)
+_USE = re.compile(
+    _FILLER + _NOT_NEGATED +
+    r"(?:chang(?:e|ed|es|ing)|us(?:e|ed|es|ing)|run(?:ning)?\s+on|"
+    r"go(?:ing)?\s+(?:back\s+)?to)\s+"
+    r"(?:over\s+)?(?:to\s+)?(?:the\s+)?(.+?)"
+    r"(?:\s+brain|\s+model|\s+instead|\s+please)?[.!?]*$",
+    re.IGNORECASE,
 )
 
 # Asking to be told who is answering, in some form. Two earlier versions were
@@ -195,6 +211,77 @@ _GREETING = re.compile(
 _QUICK_MAX_WORDS = 18
 
 
+# --- skills ---------------------------------------------------------------
+#
+# A skill is invoked by *name*, and everything above matches verbs. "check my
+# deadlines" already reaches a brain with hands through _TASK_VERBS, but "do
+# my weekly deadline sweep" is a short question that scores as *simple* and
+# goes to the cheap brain -- which has no file access and does not know the
+# skill exists, so it answers about the sweep instead of running it. Six of
+# eight natural phrasings went that way before this existed.
+#
+# Matching is on flattened text, the same trick `BrainRegistry.resolve` uses,
+# because speech-to-text does not preserve word boundaries: "deadline sweep"
+# comes back as one word about as often as two.
+
+
+def _flat(text: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "", text.lower())
+
+
+def names_a_skill(text: str, skills: Mapping[str, Sequence[str]]) -> str | None:
+    """The skill this utterance asks for, or None.
+
+    Substring matching on flattened text is loose, and that is the right way
+    round here: a false positive routes a question to a slower brain that can
+    still answer it, while a false negative sends a job to a brain that cannot
+    do it at all. Triggers are held to two words (see `skills.py`), which is
+    what keeps the looseness survivable.
+    """
+    flat = _flat(text)
+    for name, phrases in skills.items():
+        if any((p := _flat(phrase)) and p in flat for phrase in phrases):
+            return name
+    return None
+
+
+# --- continuations --------------------------------------------------------
+#
+# "Yes." is meaningless on its own, and routing it by difficulty sends it to
+# whichever brain the tier table names rather than the one that just spoke.
+# Live: claude ran the deadline sweep, wrote the plan and asked "want me to go
+# through the rest?" -- and "Yes." scored `normal`, went to groq, which could
+# not open the file claude had just written, re-derived the whole thing from
+# the briefing, and contradicted the turn before it.
+
+# Unambiguous on their own: these ask for more of what was just said.
+_CONTINUE = re.compile(
+    _FILLER + r"(?:"
+    r"(?:go|carry)\s+(?:on|ahead)|keep\s+going|continue"
+    r"|(?:tell|give|read)\s+me\s+(?:the\s+rest|more)"
+    r"|(?:what|how)\s+(?:about\s+)?else|what(?:'?s| is)\s+the\s+rest"
+    r"|the\s+rest(?:\s+please)?|(?:and\s+)?then\s+what|more\s+please"
+    r")\b[\s.!?]*$",
+    re.IGNORECASE,
+)
+# Agreement, which is only a continuation in reply to a question. Otherwise
+# "yeah" is acknowledgement, and sending it to an agentic brain costs half a
+# minute and real plan allowance to answer nothing.
+_AFFIRMATIVE = re.compile(
+    _FILLER + r"(?:ye(?:s|ah|p|up)|sure|please\s+do|do\s+it|go\s+for\s+it"
+    r"|sounds\s+good|that\s+would\s+be\s+great)"
+    r"[\s.!,]*(?:please)?[\s.!?]*$",
+    re.IGNORECASE,
+)
+
+
+def is_continuation(text: str, *, after_question: bool = False) -> bool:
+    """Whether this asks for more of the last answer rather than something new."""
+    if _CONTINUE.match(text):
+        return True
+    return after_question and bool(_AFFIRMATIVE.match(text))
+
+
 def strip_address(text: str) -> str:
     return _ADDRESS.sub("", text).strip()
 
@@ -231,8 +318,24 @@ def complexity(text: str) -> str:
     return "normal"
 
 
-def route(said: str, registry: BrainRegistry) -> Decision:
-    """Turn a transcribed utterance into something to do."""
+def route(
+    said: str,
+    registry: BrainRegistry,
+    skills: Mapping[str, Sequence[str]] | None = None,
+    *,
+    follow_on: str | None = None,
+    after_question: bool = False,
+) -> Decision:
+    """Turn a transcribed utterance into something to do.
+
+    `skills` maps an installed skill's name to the phrases that invoke it.
+    Passed in rather than read here, so the router keeps no knowledge of where
+    the vault is.
+
+    `follow_on` is the brain that answered last, and `after_question` whether
+    its answer ended by asking something. Together they keep a continuation
+    with the brain that has the context for it.
+    """
     text = strip_address(said)
     if not text:
         return Decision(Action.REPLY, "I didn't catch that.")
@@ -272,6 +375,18 @@ def route(said: str, registry: BrainRegistry) -> Decision:
             if registry.is_parked(wanted := result.brain):
                 spoken += f" Heads up, {registry.parked[wanted]}."
             return Decision(Action.REPLY, spoken)
+
+    # After the swap commands, so "switch to claude" stays a switch, and
+    # before tiering, which is what gets a skill invocation wrong.
+    if skills and (named := names_a_skill(text, skills)):
+        return Decision(
+            Action.ANSWER, text, registry.for_tier("agentic"), "agentic", named
+        )
+
+    # After the skill check, so "yes, do my weekly deadline sweep" still runs
+    # the skill rather than going back to whoever spoke last.
+    if follow_on and is_continuation(text, after_question=after_question):
+        return Decision(Action.ANSWER, text, follow_on, "continue")
 
     tier = complexity(text)
     return Decision(Action.ANSWER, text, registry.for_tier(tier), tier)

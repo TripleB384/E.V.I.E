@@ -40,6 +40,11 @@ class Assistant:
         self.vault = vault
         self._base_identity = self._identity()
         self.ctx = Context(system=self._base_identity)
+        # Who actually produced the last answer, which is not the same as
+        # `registry.active`: that only moves on a fallback, so a turn the tiers
+        # sent to claude leaves it pointing at groq. A continuation has to
+        # reach the brain that has the context, not the one on duty.
+        self._last_brain: str | None = None
 
     @classmethod
     def load(cls, settings: Settings | None = None) -> "Assistant":
@@ -66,6 +71,12 @@ class Assistant:
     # said "I'm running on OpenAI's GPT-4 model" three times in one session.
     # No regex fixes that, because the phrasings are unbounded -- the only
     # real fix is telling the brain the truth before it is asked.
+    #
+    # The same applies to a missed *switch*. "No switch to Claude" fell through
+    # to groq, which replied "I'm staying right here on the current model" --
+    # a routing decision it had no part in, stated as fact. A widened regex
+    # catches that phrasing; the next one is caught by the brain knowing it has
+    # no say.
     _WHOAMI = (
         "\n\n## Which brain you are, right now\n\n"
         "This turn is being answered by the brain named {name} — {what}. "
@@ -75,6 +86,12 @@ class Assistant:
         "about your own identity describes the model, not this assistant, and "
         "saying it would be wrong. You are E.V.I.E. either way; {name} is "
         "only what is thinking for you at the moment."
+        "\n\nYou also cannot change which brain answers: that is settled "
+        "before you are called. So if this turn asks you to switch brains, to "
+        "stay on one, or to stop using one, the request did not reach the part "
+        "that does it — say plainly that it did not go through and ask them to "
+        "say it again. Never confirm a switch, and never say what you have "
+        "decided to run on. You decided nothing."
     )
 
     def _routing_note(self, name: str) -> str:
@@ -109,8 +126,41 @@ class Assistant:
         "rather than guessing — and say when it was last synced if that is "
         "why."
     )
+    # Reading the whole list back took 17 seconds of unbroken speech, which
+    # is a long time to stand there. The list is formatted, so it invites
+    # being read out; it needs saying that speech is not a screen.
+    _DONT_READ_THE_LIST = (
+        "\n\nWhen more than about three of these would answer a question, "
+        "do not read them all out. Say how many there are and the one or two "
+        "that matter soonest, then stop and let them ask for the rest."
+    )
 
-    def _identity(self, brain: str | None = None) -> str:
+    # A skill is a job in the vault, so it needs a brain with hands. When the
+    # pin, the tier or a fallback lands it on one without them, saying nothing
+    # produces an imitation: groq was asked for the deadline sweep, could not
+    # read the log or write the plan, and returned 46 seconds of formatted
+    # markdown built from the briefing it already had. It looked like a sweep
+    # and was not one.
+    #
+    # `_NO_HANDS` alone did not cover this. It is a general instruction, and
+    # `_DONT_READ_THE_LIST` already showed a general instruction losing to a
+    # formatted list sitting in the same prompt.
+    _CANNOT_RUN = (
+        "\n\n## You were asked to run {skill}\n\n"
+        "That is a skill: a job kept in the vault that needs file access, and "
+        "you do not have it this turn. Say so first, in one short sentence — "
+        "name it and say it did not run — then help from what you have been "
+        "given, if you can. Do not describe having done it."
+    )
+
+    # Thirty-eight seconds of silence between the key going up and the first
+    # word. The work was real -- a Claude Code session reading the vault and
+    # writing a plan -- but from where you are standing it is indistinguishable
+    # from a hang. Only for skills: a named job makes the wait expected, where
+    # a line before every slow turn would just be filler.
+    _RUNNING = "Running the {skill} — give me a minute."
+
+    def _identity(self, brain: str | None = None, skill: str | None = None) -> str:
         if self.vault and self.vault.exists and (found := self.vault.identity()):
             base = found
         else:
@@ -129,6 +179,10 @@ class Assistant:
                 block=block,
                 caveat=self._CAN_READ_MORE if agentic else self._THIS_IS_ALL,
             )
+            base += self._DONT_READ_THE_LIST
+
+        if skill and not agentic:
+            base += self._CANNOT_RUN.format(skill=skill)
 
         base += self._WHOAMI.format(
             name=brain,
@@ -150,7 +204,13 @@ class Assistant:
         Commands handled by E.V.I.E. herself never reach a model, so a brain
         swap is instant and free.
         """
-        decision: Decision = route(said, self.registry)
+        decision: Decision = route(
+            said,
+            self.registry,
+            self._skills(),
+            follow_on=self._last_brain,
+            after_question=self._was_asked_something(),
+        )
 
         if decision.action is Action.QUIT:
             yield "text", "Goodbye."
@@ -169,14 +229,30 @@ class Assistant:
         spoken: list[str] = []
         used = decision.brain or self.registry.active
 
-        # Rebuilt every turn, because both halves change per turn: which
-        # brain is answering, and whether it has hands. The same conversation
-        # may be answered by a CLI brain with file tools and then by an HTTP
-        # brain with none.
-        self.ctx.system = self._identity(used)
+        # Rebuilt every turn *and* at every step of the fallback chain, because
+        # both halves change: which brain is answering, and whether it has
+        # hands. Building it once here was a real bug -- claude was logged out,
+        # groq picked up, and groq was handed claude's identity: named claude,
+        # told the vault was its working directory, never told it had no hands.
+        def identity_for(name: str) -> str:
+            return self._identity(name, decision.skill)
+
+        self.ctx.system = identity_for(used)
+
+        # Only a brain that might actually do it. Parked means no key and no
+        # attempt, which is knowable now; a login that has expired is not, so
+        # that case announces and is then corrected by the fallback notice --
+        # each line true when it was said.
+        announce = (
+            decision.skill
+            and self.registry.get(used).agentic
+            and not self.registry.is_parked(used)
+        )
+        if announce:
+            yield "notice", self._RUNNING.format(skill=decision.skill.replace("-", " "))
 
         async for kind, chunk in self.registry.stream(
-            decision.text, self.ctx, brain=decision.brain
+            decision.text, self.ctx, brain=decision.brain, system_for=identity_for
         ):
             if kind == "text":
                 spoken.append(chunk)
@@ -185,7 +261,29 @@ class Assistant:
                 yield "notice", chunk
                 used = self.registry.active
 
+        self._last_brain = used
         self._remember(said, "".join(spoken), used)
+
+    def _was_asked_something(self) -> bool:
+        """Whether her last reply ended by asking something.
+
+        "Yes" is a continuation in reply to "want me to go through the rest?"
+        and plain agreement otherwise, and the difference decides whether it is
+        worth half a minute of Claude Code to answer.
+        """
+        for turn in reversed(self.ctx.transcript):
+            if turn.role == "assistant":
+                return turn.text.rstrip().endswith("?")
+        return False
+
+    def _skills(self) -> dict[str, tuple[str, ...]]:
+        """What the vault can be asked to run.
+
+        Read per turn rather than cached: `evie skills sync` can install one
+        while she is running, and a skill that needs a restart to be heard is
+        a skill nobody uses.
+        """
+        return self.vault.skill_triggers() if self.vault else {}
 
     def _remember(self, said: str, replied: str, brain: str) -> None:
         self.ctx.transcript.append(Turn("user", said))

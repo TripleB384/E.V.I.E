@@ -96,7 +96,7 @@ Takes a minute or two; onnxruntime and the Whisper libraries are large.
 pytest
 ```
 
-457 tests pass, with no hardware and no credentials.
+565 tests pass, with no hardware and no credentials.
 
 **5. Set up and go:**
 
@@ -177,6 +177,7 @@ evie say "testing"       # audio only — isolates the TTS path
 evie brains list         # health + today's usage for every brain
 evie brains use gemini   # change the default
 evie brains test         # make real calls — does any of this actually work?
+evie skills list         # the jobs she can run, and what to say
 evie doctor              # what's missing and how to fix it
 ```
 
@@ -274,6 +275,46 @@ offline, and it survives a Canvas outage.
 
 If a sync writes nothing, `evie canvas sync --shape` prints what Canvas
 actually sent.
+
+## Skills
+
+Jobs she can run, written as markdown. A skill is a file describing a piece of
+recurring work that a brain with hands carries out.
+
+```bash
+evie skills sync     # install the shipped ones into the vault
+evie skills list     # what is installed, and what to say to run it
+```
+
+| Skill | Say |
+|---|---|
+| `weekly-deadline-sweep` | *"do my weekly deadline sweep"* · *"what should I work on"* |
+| `lecture-note-cleanup` | *"clean up my notes"* · *"tidy my notes for AICE English"* |
+| `competitor-tracker` | *"check on competitors"* |
+
+They live at `~/EVIE/vault/.claude/skills/`, which is where Claude Code looks
+in any project — and `claude` already runs with the vault as its working
+directory, so there is nothing else to wire up.
+
+**Naming one routes it to a brain with hands.** The tier system scores by
+*verb*, so "check my deadlines" was already escalating, but "do my weekly
+deadline sweep" scored as a short simple question and went to the cheap brain
+— which has no file access and would answer *about* the sweep instead of
+running it. Six of eight natural phrasings went that way. Each skill declares
+its own trigger phrases and the router matches them before tiering, at no
+model cost.
+
+**Edit them.** They are yours; the shipped text is a starting point. `sync`
+only rewrites files that still carry the `<!-- evie:managed -->` line, so
+delete that line and the file is permanently yours — `skills list` marks it
+`yours` and sync says it skipped it. That is deliberate: copying a file into
+place once and never again is how `brains.yaml` silently froze on the day
+someone ran `evie init`.
+
+Write your own by making a folder with a `SKILL.md` in it. The frontmatter
+needs `name` and `description`; add an `<!-- evie:triggers a | b | c -->` line
+to make it reachable by voice. Triggers must be at least two words — a
+one-word trigger steals every sentence containing that word.
 
 ## The stack
 

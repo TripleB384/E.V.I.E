@@ -455,6 +455,8 @@ SWITCH_CASES: list[tuple[str, str | None]] = [
     ("Evie, switch to claude", "claude"),
     ("switch back to claude", "claude"),
     ("go back to groq", "groq"),
+    ("No switch to Claude", "claude"),        # any lead-in word broke this
+    ("What are you using?", None),
     ("which brain are you using", None),      # answered, nothing switched
     ("what brain are you on", None),
     ("if you go back to auto routing.", None),

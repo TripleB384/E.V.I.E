@@ -72,6 +72,10 @@ class Vault:
         self.root.mkdir(parents=True, exist_ok=True)
         for sub in SUBDIRS:
             (self.root / sub).mkdir(exist_ok=True)
+        # Nested, so not in SUBDIRS. This is where Claude Code looks for
+        # skills in any project, and `claude` runs with the vault as its
+        # working directory -- so a file here needs no other wiring.
+        self.skills_dir().mkdir(parents=True, exist_ok=True)
         identity = self.root / "EVIE.md"
         if not identity.exists():
             identity.write_text(IDENTITY_TEMPLATE.format(owner=owner))
@@ -185,6 +189,21 @@ class Vault:
             parts.append(f"## The last {days} days\n\n" + log)
 
         return _trim("\n\n".join(parts), cap)
+
+    def skills_dir(self) -> Path:
+        from ..skills import SKILLS_DIR
+
+        return self.root / SKILLS_DIR
+
+    def skill_triggers(self) -> dict[str, tuple[str, ...]]:
+        """What to say to run each installed skill, for the router.
+
+        Imported lazily: `evie.skills` imports config, and config does not
+        need to know the vault exists.
+        """
+        from ..skills import triggers
+
+        return triggers(self.root) if self.exists else {}
 
     @staticmethod
     def _read(path: Path) -> str:
