@@ -17,7 +17,7 @@ import datetime as _dt
 import re
 from collections import defaultdict
 from dataclasses import dataclass, field
-from typing import AsyncIterator, Iterable
+from typing import AsyncIterator, Callable, Iterable
 
 from .base import (
     Brain,
@@ -302,7 +302,12 @@ class BrainRegistry:
         ]
 
     async def stream(
-        self, prompt: str, ctx: Context, *, brain: str | None = None
+        self,
+        prompt: str,
+        ctx: Context,
+        *,
+        brain: str | None = None,
+        system_for: Callable[[str], str] | None = None,
     ) -> AsyncIterator[tuple[str, str]]:
         """Stream an answer, moving down the fallback chain if a brain gives out.
 
@@ -312,6 +317,15 @@ class BrainRegistry:
 
         A brain that has already emitted text is never abandoned mid-answer --
         switching there would splice two different replies together.
+
+        `system_for` rebuilds the system prompt for whichever brain is about to
+        be tried. Without it the caller's prompt is built once, for the brain it
+        *expected* to answer, and every brain after a fallback inherits it. That
+        happened live: claude was logged out, groq picked up, and groq was told
+        it was named claude and that the vault was its working directory -- so
+        instead of saying it could not run the job, it improvised one. A brain
+        that does not know which brain it is cannot answer honestly about
+        anything, which is the whole reason the identity is injected at all.
         """
         start = self.resolve(brain) if brain else self._active
         errors: list[str] = []
@@ -319,6 +333,9 @@ class BrainRegistry:
         for index, name in enumerate(self._chain(start)):
             impl = self._brains[name]
             produced = False
+
+            if system_for is not None:
+                ctx.system = system_for(name)
 
             if index > 0:
                 yield "notice", f"{errors[-1]} Switching to {name}."

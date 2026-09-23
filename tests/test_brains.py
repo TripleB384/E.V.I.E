@@ -610,3 +610,54 @@ class TestAccountDeniedIsNotAKeyProblem:
         exc = _from_status(401, '{"error":{"message":"Invalid API key provided"}}')
         assert "stray quotes" in str(exc)
         assert "not the key" not in str(exc)
+
+
+class TestTheSystemPromptFollowsTheBrainThatAnswers:
+    """The chain is the only place that knows a switch happened.
+
+    Built once by the caller, the prompt describes the brain it *expected* to
+    answer. Live, that meant groq being told it was named claude and that the
+    vault was its working directory, after claude turned out to be logged out.
+    """
+
+    class Spy(FakeBrain):
+        def __init__(self, *a, **kw):
+            super().__init__(*a, **kw)
+            self.seen: list[str] = []
+
+        async def stream(self, prompt, ctx):
+            self.seen.append(ctx.system)
+            async for chunk in super().stream(prompt, ctx):
+                yield chunk
+
+    def _registry(self):
+        return BrainRegistry(
+            {"a": self.Spy("a", fail=BrainExhausted("out of quota")),
+             "b": self.Spy("b")},
+            default="a",
+            fallback=["a", "b"],
+        )
+
+    async def test_each_brain_is_asked_for_its_own(self):
+        reg = self._registry()
+        ctx = Context(system="original")
+        await collect(reg, ctx=ctx, system_for=lambda n: f"you are {n}")
+        assert reg.get("a").seen == ["you are a"]
+        assert reg.get("b").seen == ["you are b"]
+
+    async def test_it_is_rebuilt_before_the_call_not_after(self):
+        """Asserting on ctx afterwards would pass even if the prompt were
+        rebuilt too late to reach anyone."""
+        reg = self._registry()
+        ctx = Context(system="original")
+        await collect(reg, ctx=ctx, system_for=lambda n: f"you are {n}")
+        assert ctx.system == "you are b"
+
+    async def test_without_it_nothing_changes(self):
+        """Every other caller -- the chain phase of the self-test among them --
+        passes no hook and must behave exactly as before."""
+        reg = self._registry()
+        ctx = Context(system="original")
+        await collect(reg, ctx=ctx)
+        assert ctx.system == "original"
+        assert reg.get("b").seen == ["original"]

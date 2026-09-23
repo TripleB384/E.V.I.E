@@ -130,7 +130,25 @@ class Assistant:
         "that matter soonest, then stop and let them ask for the rest."
     )
 
-    def _identity(self, brain: str | None = None) -> str:
+    # A skill is a job in the vault, so it needs a brain with hands. When the
+    # pin, the tier or a fallback lands it on one without them, saying nothing
+    # produces an imitation: groq was asked for the deadline sweep, could not
+    # read the log or write the plan, and returned 46 seconds of formatted
+    # markdown built from the briefing it already had. It looked like a sweep
+    # and was not one.
+    #
+    # `_NO_HANDS` alone did not cover this. It is a general instruction, and
+    # `_DONT_READ_THE_LIST` already showed a general instruction losing to a
+    # formatted list sitting in the same prompt.
+    _CANNOT_RUN = (
+        "\n\n## You were asked to run {skill}\n\n"
+        "That is a skill: a job kept in the vault that needs file access, and "
+        "you do not have it this turn. Say so first, in one short sentence — "
+        "name it and say it did not run — then help from what you have been "
+        "given, if you can. Do not describe having done it."
+    )
+
+    def _identity(self, brain: str | None = None, skill: str | None = None) -> str:
         if self.vault and self.vault.exists and (found := self.vault.identity()):
             base = found
         else:
@@ -150,6 +168,9 @@ class Assistant:
                 caveat=self._CAN_READ_MORE if agentic else self._THIS_IS_ALL,
             )
             base += self._DONT_READ_THE_LIST
+
+        if skill and not agentic:
+            base += self._CANNOT_RUN.format(skill=skill)
 
         base += self._WHOAMI.format(
             name=brain,
@@ -190,14 +211,18 @@ class Assistant:
         spoken: list[str] = []
         used = decision.brain or self.registry.active
 
-        # Rebuilt every turn, because both halves change per turn: which
-        # brain is answering, and whether it has hands. The same conversation
-        # may be answered by a CLI brain with file tools and then by an HTTP
-        # brain with none.
-        self.ctx.system = self._identity(used)
+        # Rebuilt every turn *and* at every step of the fallback chain, because
+        # both halves change: which brain is answering, and whether it has
+        # hands. Building it once here was a real bug -- claude was logged out,
+        # groq picked up, and groq was handed claude's identity: named claude,
+        # told the vault was its working directory, never told it had no hands.
+        def identity_for(name: str) -> str:
+            return self._identity(name, decision.skill)
+
+        self.ctx.system = identity_for(used)
 
         async for kind, chunk in self.registry.stream(
-            decision.text, self.ctx, brain=decision.brain
+            decision.text, self.ctx, brain=decision.brain, system_for=identity_for
         ):
             if kind == "text":
                 spoken.append(chunk)

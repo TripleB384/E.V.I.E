@@ -396,3 +396,123 @@ class TestSheCanRunTheSkillsInTheVault:
         a = Assistant(reg, Settings(vault=tmp_path / "nope"), None)
         reply = await a.ask("do my weekly deadline sweep")
         assert reply.text
+
+
+class TestAFallbackBrainGetsItsOwnIdentity:
+    """`ctx.system` was built once, for the brain we *expected* to answer.
+
+    Live: claude was logged out, groq picked up, and groq was handed claude's
+    identity -- named claude, told the vault was its working directory, never
+    told it had no hands. So it did not say it could not run the job; it
+    produced 46 seconds of formatted markdown that looked like the job.
+
+    That is the GPT-4 bug through a different door. `_WHOAMI` exists because a
+    model asked what it is answers from training data, and a fallen-back turn
+    put the *wrong* answer straight into the prompt instead.
+    """
+
+    def _pair(self, tmp_path, **kw):
+        vault = Vault(tmp_path / "v").ensure("test")
+        (vault.root / "EVIE.md").write_text("You are E.V.I.E.")
+        claude = FakeBrain("claude", agentic=True, model="claude-cli",
+                           fail=BrainExhausted("out of quota"))
+        groq = FakeBrain("groq", agentic=False, model="openai/gpt-oss-120b")
+        reg = BrainRegistry(
+            {"claude": claude, "groq": groq},
+            default="claude",
+            fallback=["claude", "groq"],
+            tiers={"simple": "claude", "normal": "claude", "agentic": "claude"},
+        )
+        return Assistant(reg, Settings(vault=vault.root), vault), vault
+
+    async def test_it_is_named_as_itself(self, tmp_path):
+        a, _ = self._pair(tmp_path)
+        reply = await a.ask("what's the capital of Peru")
+        assert reply.notices, "the chain did not actually fall back"
+        assert "named groq" in a.ctx.system
+        assert "named claude" not in a.ctx.system
+
+    async def test_it_is_described_as_itself(self, tmp_path):
+        a, _ = self._pair(tmp_path)
+        await a.ask("what's the capital of Peru")
+        assert "openai/gpt-oss-120b" in a.ctx.system
+        assert "claude-cli" not in a.ctx.system
+
+    async def test_it_is_told_it_has_no_hands(self, tmp_path):
+        """The one that did the damage: it inherited claude's agentic framing
+        and believed it could open files."""
+        a, _ = self._pair(tmp_path)
+        await a.ask("what's the capital of Peru")
+        assert "no file access" in a.ctx.system
+        assert "working directory" not in a.ctx.system
+
+    async def test_the_brain_saw_it_at_the_time_not_just_afterwards(self, tmp_path):
+        """Asserting on `ctx.system` after the turn would pass even if the
+        prompt were rebuilt too late to reach anyone."""
+        a, _ = self._pair(tmp_path)
+        seen = {}
+        groq = a.registry.get("groq")
+        original = groq.stream
+
+        async def spy(prompt, ctx):
+            seen["system"] = ctx.system
+            async for chunk in original(prompt, ctx):
+                yield chunk
+
+        groq.stream = spy
+        await a.ask("what's the capital of Peru")
+        assert "named groq" in seen["system"]
+        assert "no file access" in seen["system"]
+
+    async def test_a_turn_with_no_fallback_is_unchanged(self, tmp_path):
+        a, _ = self._pair(tmp_path)
+        a.registry.get("claude").fail = None
+        await a.ask("what's the capital of Peru")
+        assert "named claude" in a.ctx.system
+        assert "no file access" not in a.ctx.system
+
+
+class TestASkillThatCannotRunSaysSo:
+    """groq was asked for the deadline sweep, could not read the log or write
+    the plan, and returned a formatted list built from the briefing it already
+    had. It looked like a sweep and was not one."""
+
+    def _pair(self, tmp_path, claude_works=False):
+        vault = Vault(tmp_path / "v").ensure("test")
+        claude = FakeBrain("claude", agentic=True)
+        if not claude_works:
+            claude.fail = BrainExhausted("out of quota")
+        groq = FakeBrain("groq", agentic=False)
+        reg = BrainRegistry(
+            {"claude": claude, "groq": groq},
+            default="groq",
+            fallback=["claude", "groq"],
+            tiers={"simple": "groq", "normal": "groq", "agentic": "claude"},
+        )
+        return Assistant(reg, Settings(vault=vault.root), vault), vault
+
+    async def test_a_toolless_brain_is_told_the_skill_did_not_run(self, tmp_path):
+        from evie import skills
+
+        a, vault = self._pair(tmp_path)
+        skills.sync(vault.root)
+        await a.ask("do my weekly deadline sweep")
+        assert "weekly-deadline-sweep" in a.ctx.system
+        assert "did not run" in a.ctx.system
+
+    async def test_a_brain_with_hands_gets_no_such_caveat(self, tmp_path):
+        from evie import skills
+
+        a, vault = self._pair(tmp_path, claude_works=True)
+        skills.sync(vault.root)
+        await a.ask("do my weekly deadline sweep")
+        assert a.registry.get("claude").prompts, "claude never ran it"
+        assert "did not run" not in a.ctx.system
+
+    async def test_an_ordinary_question_never_gets_it(self, tmp_path):
+        from evie import skills
+
+        a, vault = self._pair(tmp_path)
+        skills.sync(vault.root)
+        await a.ask("what's the capital of Peru")
+        assert "did not run" not in a.ctx.system
