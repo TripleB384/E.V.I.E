@@ -66,6 +66,8 @@ class VoiceLoop:
         settings = self.assistant.settings
         key = settings.hotkey
 
+        self._warm_up()
+
         with Speaker(self.tts.sample_rate) as speaker, PushToTalk(key) as mic:
             self.console.print(
                 f"[bold green]E.V.I.E. ready[/] — hold [bold]{key}[/] to talk, "
@@ -96,6 +98,21 @@ class VoiceLoop:
                 if quit_after:
                     speaker.wait(timeout=10)
                     return
+
+    def _warm_up(self) -> None:
+        """Run one throwaway inference through each model before saying ready.
+
+        Loading a model is not the same as warming it: both Whisper and Kokoro
+        defer real work to the first call. Without this the first answer of
+        every session was ~3.5s slower than every answer after it, which reads
+        as "she is slow" rather than "the model is starting".
+
+        Nothing here is allowed to fail the session -- an engine with no
+        `warm` is simply skipped.
+        """
+        for part in (self.ears, self.tts):
+            if callable(warm := getattr(part, "warm", None)):
+                warm()
 
     async def _answer(self, said, speaker, timings, turn_start) -> bool:
         """Stream one answer to the speakers. Returns True if she should quit."""

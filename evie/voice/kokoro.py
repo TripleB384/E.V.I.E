@@ -60,5 +60,20 @@ class KokoroEngine:
         self.sample_rate = rate
         return np.asarray(samples, dtype="float32")
 
+    def warm(self) -> None:
+        """Pay the first-inference cost before she claims to be ready.
+
+        ONNX Runtime defers graph optimisation and memory allocation to the
+        first `create()`, not to loading the model. Measured on an M-series
+        Mac: the first thing she ever said took 3.97s from first token to
+        first audio, and every reply after it took 0.6-1.0s. Nothing was
+        wrong -- the cost is real and unavoidable, it was just being paid at
+        the single worst moment, in the middle of answering.
+        """
+        try:
+            self.synth("ready")
+        except Exception:  # noqa: BLE001 - a warm-up must never stop startup
+            pass
+
     def close(self) -> None:
         self._kokoro = None

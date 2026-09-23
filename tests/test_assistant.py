@@ -298,3 +298,32 @@ class TestSheCanSeeTheVault:
         a = self._assistant(tmp_path)
         await a.ask("hello")
         assert "notes-to-self" in a.ctx.system
+
+
+class TestSheDoesNotReadTheWholeList:
+    """Asked what was due, she spoke seven deadlines in full: 17.4 seconds of
+    unbroken speech. EVIE.md already says to lead with the answer and offer
+    the detail, but the briefing hands her a formatted list, and a formatted
+    list invites being read out."""
+
+    def _assistant(self, tmp_path):
+        vault = Vault(tmp_path / "v").ensure("Isaac")
+        (vault.root / "EVIE.md").write_text("You are E.V.I.E.")
+        classes = vault.root / "classes"
+        classes.mkdir(parents=True, exist_ok=True)
+        (classes / "upcoming.md").write_text("- [ ] **Thu 25 Sep** — Lab 4\n")
+        reg = BrainRegistry({"groq": FakeBrain("groq")}, default="groq")
+        return Assistant(reg, Settings(vault=vault.root), vault)
+
+    async def test_she_is_told_to_summarise_a_long_list(self, tmp_path):
+        a = self._assistant(tmp_path)
+        await a.ask("what's due this week")
+        assert "do not read them all out" in a.ctx.system
+        assert "let them ask for the rest" in a.ctx.system
+
+    async def test_the_advice_only_rides_along_with_a_vault(self, tmp_path):
+        """With nothing to list, the instruction is noise in every prompt."""
+        reg = BrainRegistry({"groq": FakeBrain("groq")}, default="groq")
+        a = Assistant(reg, Settings(vault=tmp_path / "none"), None)
+        await a.ask("hello")
+        assert "do not read them all out" not in a.ctx.system

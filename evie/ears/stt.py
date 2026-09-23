@@ -53,6 +53,21 @@ class Ears:
                 f"already have cached."
             ) from exc
 
+    def warm(self) -> None:
+        """Same first-inference cost as Kokoro, paid up front.
+
+        Faint noise rather than silence: `transcribe` returns early on
+        anything below the audible threshold, so zeros would never reach the
+        model and would warm nothing.
+        """
+        import numpy as np
+
+        noise = (np.random.default_rng(0).standard_normal(6400) * 0.01).astype("float32")
+        try:
+            self.transcribe(noise)
+        except Exception:  # noqa: BLE001 - a warm-up must never stop startup
+            pass
+
     def transcribe(self, samples, sample_rate: int = 16000) -> str:
         """Transcribe float32 mono samples. Returns '' for silence."""
         import numpy as np

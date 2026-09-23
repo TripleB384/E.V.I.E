@@ -109,6 +109,14 @@ class Assistant:
         "rather than guessing — and say when it was last synced if that is "
         "why."
     )
+    # Reading the whole list back took 17 seconds of unbroken speech, which
+    # is a long time to stand there. The list is formatted, so it invites
+    # being read out; it needs saying that speech is not a screen.
+    _DONT_READ_THE_LIST = (
+        "\n\nWhen more than about three of these would answer a question, "
+        "do not read them all out. Say how many there are and the one or two "
+        "that matter soonest, then stop and let them ask for the rest."
+    )
 
     def _identity(self, brain: str | None = None) -> str:
         if self.vault and self.vault.exists and (found := self.vault.identity()):
@@ -129,6 +137,7 @@ class Assistant:
                 block=block,
                 caveat=self._CAN_READ_MORE if agentic else self._THIS_IS_ALL,
             )
+            base += self._DONT_READ_THE_LIST
 
         base += self._WHOAMI.format(
             name=brain,
